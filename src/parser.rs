@@ -5,6 +5,8 @@ pub enum Token<'src> {
     Integer(u64),
     LowerIdent(&'src str),
     UpperIdent(&'src str),
+    Indent,
+    Dedent,
 }
 
 #[derive(Debug)]
@@ -25,11 +27,16 @@ pub enum Error<'src> {
     UnexpectedChar(char),
     UnexpectedEof,
     UnexpectedToken(Token<'src>),
+    InvalidIndent,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Parser<'src> {
     src: &'src str,
+    indent: u32,
+    indents_to_output: i32,
+    is_start_of_file: bool,
+    ignore_dents: bool,
 }
 
 pub type Result<'src, T> = std::result::Result<T, Error<'src>>;
@@ -38,10 +45,15 @@ impl<'src> Parser<'src> {
     pub fn from_src(src: &'src str) -> Self {
         Self {
             src,
+            indent: 0,
+            indents_to_output: 0,
+            is_start_of_file: true,
+            ignore_dents: false,
         }
     }
 
     fn advance(&mut self) -> Option<char> {
+        self.is_start_of_file = false;
         self.src.chars().next().map(|c| {
             self.src = &self.src[c.len_utf8()..];
             c
@@ -52,14 +64,58 @@ impl<'src> Parser<'src> {
         self.src.chars().next()
     }
 
-    fn skip_whitespace(&mut self) {
-        while self.peek().filter(|x| x.is_whitespace()).is_some() {
+    fn skip_whitespace(&mut self) -> i32 {
+        let mut new_indent = 0;
+        let mut measure_indents = self.is_start_of_file;
+        let mut check_indent = measure_indents;
+
+        while let Some(c) = self.peek().filter(|&x| x.is_whitespace()) {
+            if !self.ignore_dents {
+                if c == '\n' {
+                    new_indent = 0;
+                    measure_indents = true;
+                    check_indent = true;
+                } else if measure_indents {
+                    if c == '\t' {
+                        new_indent += 1;
+                    } else {
+                        measure_indents = false;
+                    }
+                }
+            }
+
             self.advance();
         }
+
+        let ret;
+        if check_indent {
+            ret = new_indent as i32 - self.indent as i32;
+            self.indent = new_indent;
+        } else {
+            ret = 0;
+        };
+
+        while self.peek().filter(|&x| x != '\n' && x.is_whitespace()).is_some() {
+            self.advance();
+        }
+
+        ret
     }
 
-    fn parse_token(&mut self) -> Result<'src, Token<'src>> {
-        self.skip_whitespace();
+    pub fn parse_token(&mut self) -> Result<'src, Token<'src>> {
+        if self.ignore_dents {
+            self.skip_whitespace();
+        } else if self.indents_to_output == 0 {
+            self.indents_to_output = self.skip_whitespace();
+        }
+
+        if self.indents_to_output > 0 {
+            self.indents_to_output -= 1;
+            return Ok(Token::Indent)
+        } else if self.indents_to_output < 0 {
+            self.indents_to_output += 1;
+            return Ok(Token::Dedent)
+        }
 
         let old_src = self.src;
         match self.advance() {
@@ -105,11 +161,9 @@ impl<'src> Parser<'src> {
 
     // In theory, we shouldn't need self to be &mut here, but it's easier
     // if it is and isn't a problem in practice.
-    fn peek_token(&mut self) -> Result<'src, Token<'src>> {
-        let old_src = self.src;
-        let res = self.parse_token();
-        self.src = old_src;
-        res
+    fn peek_token(&self) -> Result<'src, Token<'src>> {
+        let mut other = self.clone();
+        other.parse_token()
     }
 
     pub fn parse_expr(&mut self) -> Result<'src, Expr<'src>> {
@@ -117,6 +171,7 @@ impl<'src> Parser<'src> {
             Token::Integer(i) => Ok(Expr::Integer(i)),
             Token::LowerIdent(s) => Ok(Expr::Variable(s)),
             Token::LParen => {
+                self.ignore_dents = true;
                 let mut function_ident = vec![];
                 let mut args = vec![];
                 loop {
@@ -124,6 +179,7 @@ impl<'src> Parser<'src> {
                     match token {
                         Token::RParen => {
                             let _ = self.parse_token();
+                            self.ignore_dents = false;
                             break Ok(Expr::Call(function_ident, args))
                         },
                         Token::UpperIdent(s) => {
