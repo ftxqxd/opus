@@ -1,30 +1,30 @@
 #[derive(Debug)]
 pub enum Token<'src> {
-    LParen,
-    RParen,
+    LeftParenthesis,
+    RightParenthesis,
     Integer(u64),
-    LowerIdent(&'src str),
-    UpperIdent(&'src str),
+    LowercaseIdentifier(&'src str),
+    UppercaseIdentifier(&'src str),
     Indent,
     Dedent,
 }
 
 #[derive(Debug)]
-pub enum Expr<'src> {
+pub enum Expression<'src> {
     Integer(u64),
     Variable(&'src str),
-    Call(FunctionIdent<'src>, Vec<Expr<'src>>),
+    Call(FunctionIdentifier<'src>, Vec<Expression<'src>>),
 }
 
 /// An identifier that represents a function; e.g., `Foo _ _ Bar _`.
 ///
 /// Upper-cased identifiers which form parts of the name are represented by `Some(name)`; 'gaps'
 /// for arguments are represented by `None`.
-pub type FunctionIdent<'src> = Vec<Option<&'src str>>;
+pub type FunctionIdentifier<'src> = Vec<Option<&'src str>>;
 
 #[derive(Debug)]
 pub enum Error<'src> {
-    UnexpectedChar(char),
+    UnexpectedCharacter(char),
     UnexpectedEof,
     UnexpectedToken(Token<'src>),
     InvalidIndent,
@@ -119,8 +119,8 @@ impl<'src> Parser<'src> {
 
         let old_src = self.src;
         match self.advance() {
-            Some('(') => Ok(Token::LParen),
-            Some(')') => Ok(Token::RParen),
+            Some('(') => Ok(Token::LeftParenthesis),
+            Some(')') => Ok(Token::RightParenthesis),
             Some(c @ '0'...'9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'...'9') = self.peek() {
@@ -140,7 +140,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
-                Ok(Token::UpperIdent(&old_src[0..byte_len]))
+                Ok(Token::UppercaseIdentifier(&old_src[0..byte_len]))
             },
             Some(c @ 'a'...'z') => {
                 let mut byte_len = c.len_utf8();
@@ -152,9 +152,9 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
-                Ok(Token::LowerIdent(&old_src[0..byte_len]))
+                Ok(Token::LowercaseIdentifier(&old_src[0..byte_len]))
             },
-            Some(c) => Err(Error::UnexpectedChar(c)),
+            Some(c) => Err(Error::UnexpectedCharacter(c)),
             None => Err(Error::UnexpectedEof),
         }
     }
@@ -166,28 +166,28 @@ impl<'src> Parser<'src> {
         other.parse_token()
     }
 
-    pub fn parse_expr(&mut self) -> Result<'src, Expr<'src>> {
+    pub fn parse_expression(&mut self) -> Result<'src, Expression<'src>> {
         match self.parse_token()? {
-            Token::Integer(i) => Ok(Expr::Integer(i)),
-            Token::LowerIdent(s) => Ok(Expr::Variable(s)),
-            Token::LParen => {
+            Token::Integer(i) => Ok(Expression::Integer(i)),
+            Token::LowercaseIdentifier(s) => Ok(Expression::Variable(s)),
+            Token::LeftParenthesis => {
                 self.ignore_dents = true;
                 let mut function_ident = vec![];
                 let mut args = vec![];
                 loop {
                     let token = self.peek_token()?;
                     match token {
-                        Token::RParen => {
+                        Token::RightParenthesis => {
                             let _ = self.parse_token();
                             self.ignore_dents = false;
-                            break Ok(Expr::Call(function_ident, args))
+                            break Ok(Expression::Call(function_ident, args))
                         },
-                        Token::UpperIdent(s) => {
+                        Token::UppercaseIdentifier(s) => {
                             let _ = self.parse_token();
                             function_ident.push(Some(s));
                         },
                         _ => {
-                            args.push(self.parse_expr()?);
+                            args.push(self.parse_expression()?);
                             function_ident.push(None);
                         },
                     }

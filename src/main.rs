@@ -10,7 +10,7 @@ fn main() {
     let mut parser = Parser::from_src(src);
 
     loop {
-        match parser.parse_expr() {
+        match parser.parse_expression() {
             Ok(e) => println!("{:?}", e),
             Err(e) => { println!("error: {:?}", e); break },
         }
