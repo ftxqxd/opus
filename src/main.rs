@@ -5,8 +5,9 @@ fn main() {
 
     let src = "\
 (Print foo: int64 To output: writableStream)
-\t(Print (Convert foo To String) To output)";
-    let mut parser = Parser::from_src(src);
+\t(Print (Convert foo To String) To output)
+\t(Log something)";
+    let mut parser = Parser::from_source(src);
 
     loop {
         match parser.parse_definition() {

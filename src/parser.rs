@@ -1,85 +1,92 @@
 #[derive(Debug, Clone, PartialEq)]
-pub enum Token<'src> {
+pub enum Token<'source> {
     LeftParenthesis,
     RightParenthesis,
     Colon,
     Integer(u64),
-    LowercaseIdentifier(&'src str),
-    UppercaseIdentifier(&'src str),
+    LowercaseIdentifier(&'source str),
+    UppercaseIdentifier(&'source str),
     Indent,
     Dedent,
 }
 
 #[derive(Debug)]
-pub enum Expression<'src> {
+pub enum Expression<'source> {
     Integer(u64),
-    Variable(&'src str),
-    Call(FunctionName<'src>, Vec<Expression<'src>>),
+    Variable(&'source str),
+    Call(FunctionName<'source>, Vec<Expression<'source>>),
 }
 
+pub type Block<'source> = Vec<Expression<'source>>;
+
 #[derive(Debug)]
-pub enum Definition<'src> {
-    Function(FunctionSignature<'src>, Expression<'src>),
+pub enum Definition<'source> {
+    Function(FunctionSignature<'source>, Block<'source>),
 }
 
 /// The name of a function; e.g., `Foo _ _ Bar _`.
 ///
 /// Uppercase identifiers which form parts of the name are represented by `Some(name)`; 'gaps' for
 /// arguments are represented by `None`.
-pub type FunctionName<'src> = Vec<Option<&'src str>>;
+pub type FunctionName<'source> = Vec<Option<&'source str>>;
 
 /// The full signature of a function (including argument names & types).
 #[derive(Debug)]
-pub struct FunctionSignature<'src> {
+pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
-    pub name: FunctionName<'src>,
+    pub name: FunctionName<'source>,
     /// A list of `(name, type)` representing the names & types of the function's arguments.
-    pub arguments: Vec<(&'src str, Expression<'src>)>,
+    pub arguments: Vec<(&'source str, Expression<'source>)>,
 }
 
 #[derive(Debug)]
-pub enum Error<'src> {
+pub enum Error<'source> {
     UnexpectedCharacter(char),
     UnexpectedEof,
-    UnexpectedToken(Token<'src>),
-    ExpectedFoundToken { expected: Token<'src>, found: Token<'src> },
+    UnexpectedToken(Token<'source>),
+    ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
     InvalidIndent,
 }
 
 #[derive(Debug, Clone)]
-pub struct Parser<'src> {
-    src: &'src str,
+pub struct Parser<'source> {
+    source: &'source str,
     indent: u32,
     indents_to_output: i32,
     is_start_of_file: bool,
+
+    /// This is set once we have reached the end of the source and have emitted all necessary
+    /// `Token::Dedent`s.
+    is_end_of_file: bool,
 
     /// If this is zero, indents/dedents will *not* be ignored; otherwise, they will be.
     ignore_dents: u32,
 }
 
-pub type Result<'src, T> = std::result::Result<T, Error<'src>>;
+pub type Result<'source, T> = std::result::Result<T, Error<'source>>;
 
-impl<'src> Parser<'src> {
-    pub fn from_src(src: &'src str) -> Self {
+impl<'source> Parser<'source> {
+    pub fn from_source(source: &'source str) -> Self {
         Self {
-            src,
+            source,
             indent: 0,
             indents_to_output: 0,
             is_start_of_file: true,
+            is_end_of_file: false,
             ignore_dents: 0,
         }
     }
 
     fn advance(&mut self) -> Option<char> {
         self.is_start_of_file = false;
-        self.src.chars().next().map(|c| {
-            self.src = &self.src[c.len_utf8()..];
+        self.source.chars().next().map(|c| {
+            self.source = &self.source[c.len_utf8()..];
             c
         })
     }
 
     fn peek(&self) -> Option<char> {
-        self.src.chars().next()
+        self.source.chars().next()
     }
 
     fn skip_whitespace(&mut self) -> i32 {
@@ -105,6 +112,11 @@ impl<'src> Parser<'src> {
             self.advance();
         }
 
+        if self.source.len() == 0 && !self.is_end_of_file {
+            self.is_end_of_file = true;
+            return -(self.indent as i32)
+        }
+
         let ret;
         if check_indent {
             ret = new_indent as i32 - self.indent as i32;
@@ -120,7 +132,7 @@ impl<'src> Parser<'src> {
         ret
     }
 
-    pub fn parse_token(&mut self) -> Result<'src, Token<'src>> {
+    pub fn parse_token(&mut self) -> Result<'source, Token<'source>> {
         if self.ignore_dents > 0 {
             self.skip_whitespace();
         } else if self.indents_to_output == 0 {
@@ -135,7 +147,7 @@ impl<'src> Parser<'src> {
             return Ok(Token::Dedent)
         }
 
-        let old_src = self.src;
+        let old_source = self.source;
         match self.advance() {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
@@ -159,7 +171,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
-                Ok(Token::UppercaseIdentifier(&old_src[0..byte_len]))
+                Ok(Token::UppercaseIdentifier(&old_source[0..byte_len]))
             },
             Some(c @ 'a'...'z') => {
                 let mut byte_len = c.len_utf8();
@@ -171,7 +183,7 @@ impl<'src> Parser<'src> {
                         break;
                     }
                 }
-                Ok(Token::LowercaseIdentifier(&old_src[0..byte_len]))
+                Ok(Token::LowercaseIdentifier(&old_source[0..byte_len]))
             },
             Some(c) => Err(Error::UnexpectedCharacter(c)),
             None => Err(Error::UnexpectedEof),
@@ -180,12 +192,12 @@ impl<'src> Parser<'src> {
 
     // In theory, we shouldn't need self to be &mut here, but it's easier
     // if it is and isn't a problem in practice.
-    fn peek_token(&self) -> Result<'src, Token<'src>> {
+    fn peek_token(&self) -> Result<'source, Token<'source>> {
         let mut other = self.clone();
         other.parse_token()
     }
 
-    fn expect(&mut self, expected: &Token<'src>) -> Result<'src, ()> {
+    fn expect(&mut self, expected: &Token<'source>) -> Result<'source, ()> {
         let found = self.parse_token()?;
         if *expected != found {
             return Err(Error::ExpectedFoundToken { expected: expected.clone(), found })
@@ -194,7 +206,7 @@ impl<'src> Parser<'src> {
         Ok(())
     }
 
-    pub fn parse_expression(&mut self) -> Result<'src, Expression<'src>> {
+    pub fn parse_expression(&mut self) -> Result<'source, Expression<'source>> {
         match self.parse_token()? {
             Token::Integer(i) => Ok(Expression::Integer(i)),
             Token::LowercaseIdentifier(s) => Ok(Expression::Variable(s)),
@@ -225,14 +237,30 @@ impl<'src> Parser<'src> {
         }
     }
 
-    pub fn parse_definition(&mut self) -> Result<'src, Definition<'src>> {
+    /// Parse a block.  The parsing process stops when it encounters a `Token::Dedent`, which it
+    /// does *not* consume.
+    fn parse_block(&mut self) -> Result<'source, Block<'source>> {
+        let mut expressions = vec![];
+
+        loop {
+            match self.peek_token()? {
+                Token::Dedent => break,
+                _ => expressions.push(self.parse_expression()?),
+            }
+        }
+
+        Ok(expressions)
+    }
+
+    pub fn parse_definition(&mut self) -> Result<'source, Definition<'source>> {
         let signature = self.parse_function_signature()?;
         self.expect(&Token::Indent)?;
-        let body = self.parse_expression()?;
+        let body = self.parse_block()?;
+        self.expect(&Token::Dedent)?;
         Ok(Definition::Function(signature, body))
     }
 
-    pub fn parse_function_signature(&mut self) -> Result<'src, FunctionSignature<'src>> {
+    fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
         self.expect(&Token::LeftParenthesis)?;
 
         let mut name = vec![];
