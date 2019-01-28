@@ -3,14 +3,13 @@ pub mod parser;
 fn main() {
     use parser::Parser;
 
-    let src = "1
-(Foo
-\t(Baz) 456 Bar 71)
-345";
+    let src = "\
+(Print foo: int64 To output: writableStream)
+\t(Print (Convert foo To String) To output)";
     let mut parser = Parser::from_src(src);
 
     loop {
-        match parser.parse_expression() {
+        match parser.parse_definition() {
             Ok(e) => println!("{:?}", e),
             Err(e) => { println!("error: {:?}", e); break },
         }
