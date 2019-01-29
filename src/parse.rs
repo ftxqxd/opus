@@ -45,7 +45,6 @@ pub enum Error<'source> {
     UnexpectedEof,
     UnexpectedToken(Token<'source>),
     ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
-    InvalidIndent,
 }
 
 #[derive(Debug, Clone)]
