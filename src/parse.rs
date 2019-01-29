@@ -237,26 +237,25 @@ impl<'source> Parser<'source> {
         }
     }
 
-    /// Parse a block.  The parsing process stops when it encounters a `Token::Dedent`, which it
-    /// does *not* consume.
+    /// Parse a block, including its opening `Indent` and closing `Dedent` tokens.
     fn parse_block(&mut self) -> Result<'source, Block<'source>> {
         let mut expressions = vec![];
 
+        self.expect(&Token::Indent)?;
         loop {
             match self.peek_token()? {
                 Token::Dedent => break,
                 _ => expressions.push(self.parse_expression()?),
             }
         }
+        let _ = self.parse_token(); // Skip past the Token::Dedent
 
         Ok(expressions)
     }
 
     pub fn parse_definition(&mut self) -> Result<'source, Definition<'source>> {
         let signature = self.parse_function_signature()?;
-        self.expect(&Token::Indent)?;
         let body = self.parse_block()?;
-        self.expect(&Token::Dedent)?;
         Ok(Definition::Function(signature, body))
     }
 
