@@ -14,29 +14,31 @@ pub enum Token<'source> {
 pub enum Expression<'source> {
     Integer(u64),
     Variable(&'source str),
-    Call(FunctionName<'source>, Vec<Expression<'source>>),
+    Call(Box<FunctionName<'source>>, Vec<Expression<'source>>),
 }
 
-pub type Block<'source> = Vec<Expression<'source>>;
+pub type Block<'source> = [Expression<'source>];
 
 #[derive(Debug)]
 pub enum Definition<'source> {
-    Function(FunctionSignature<'source>, Block<'source>),
+    Function(FunctionSignature<'source>, Box<Block<'source>>),
 }
 
 /// The name of a function; e.g., `Foo _ _ Bar _`.
 ///
 /// Uppercase identifiers which form parts of the name are represented by `Some(name)`; 'gaps' for
 /// arguments are represented by `None`.
-pub type FunctionName<'source> = Vec<Option<&'source str>>;
+pub type FunctionName<'source> = [Option<&'source str>];
 
 /// The full signature of a function (including argument names & types).
 #[derive(Debug)]
 pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
-    pub name: FunctionName<'source>,
+    pub name: Box<FunctionName<'source>>,
     /// A list of `(name, type)` representing the names & types of the function's arguments.
     pub arguments: Vec<(&'source str, Expression<'source>)>,
+
+    pub return_type: Expression<'source>,
 }
 
 #[derive(Debug)]
@@ -219,7 +221,7 @@ impl<'source> Parser<'source> {
                         Token::RightParenthesis => {
                             let _ = self.parse_token();
                             self.ignore_dents -= 1;
-                            break Ok(Expression::Call(function_ident, args))
+                            break Ok(Expression::Call(function_ident.into(), args))
                         },
                         Token::UppercaseIdentifier(s) => {
                             let _ = self.parse_token();
@@ -237,7 +239,7 @@ impl<'source> Parser<'source> {
     }
 
     /// Parse a block, including its opening `Indent` and closing `Dedent` tokens.
-    fn parse_block(&mut self) -> Result<'source, Block<'source>> {
+    fn parse_block(&mut self) -> Result<'source, Box<Block<'source>>> {
         let mut expressions = vec![];
 
         self.expect(&Token::Indent)?;
@@ -249,7 +251,7 @@ impl<'source> Parser<'source> {
         }
         let _ = self.parse_token(); // Skip past the Token::Dedent
 
-        Ok(expressions)
+        Ok(expressions.into())
     }
 
     pub fn parse_definition(&mut self) -> Result<'source, Definition<'source>> {
@@ -273,6 +275,7 @@ impl<'source> Parser<'source> {
                 Token::LowercaseIdentifier(identifier) => {
                     self.expect(&Token::Colon)?;
                     let typ = self.parse_expression()?;
+                    name.push(None);
                     arguments.push((identifier, typ));
                 },
                 Token::RightParenthesis => break,
@@ -281,9 +284,13 @@ impl<'source> Parser<'source> {
         }
         self.ignore_dents -= 1;
 
+        self.expect(&Token::Colon)?;
+        let return_type = self.parse_expression()?;
+
         Ok(FunctionSignature {
-            name,
+            name: name.into(),
             arguments,
+            return_type,
         })
     }
 }
