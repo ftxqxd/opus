@@ -3,11 +3,13 @@ pub enum Token<'source> {
     LeftParenthesis,
     RightParenthesis,
     Colon,
+    Equals,
     Integer(u64),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
     Indent,
     Dedent,
+    Var,
 }
 
 #[derive(Debug)]
@@ -15,6 +17,7 @@ pub enum Expression<'source> {
     Integer(u64),
     Variable(&'source str),
     Call(Box<FunctionName<'source>>, Vec<Expression<'source>>),
+    Assignment(&'source str, Box<Expression<'source>>),
 }
 
 pub type Block<'source> = [Expression<'source>];
@@ -47,6 +50,7 @@ pub enum Error<'source> {
     UnexpectedEof,
     UnexpectedToken(Token<'source>),
     ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
+    ExpectedLowercaseIdentifier(Token<'source>),
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +157,7 @@ impl<'source> Parser<'source> {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
             Some(':') => Ok(Token::Colon),
+            Some('=') => Ok(Token::Equals),
             Some(c @ '0'...'9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'...'9') = self.peek() {
@@ -184,7 +189,11 @@ impl<'source> Parser<'source> {
                         break;
                     }
                 }
-                Ok(Token::LowercaseIdentifier(&old_source[0..byte_len]))
+                let identifier = &old_source[0..byte_len];
+                match identifier {
+                    "var" => Ok(Token::Var),
+                    _ => Ok(Token::LowercaseIdentifier(identifier)),
+                }
             },
             Some(c) => Err(Error::UnexpectedCharacter(c)),
             None => Err(Error::UnexpectedEof),
@@ -205,6 +214,13 @@ impl<'source> Parser<'source> {
         }
 
         Ok(())
+    }
+
+    fn parse_lowercase_identifier(&mut self) -> Result<'source, &'source str> {
+        match self.parse_token()? {
+            Token::LowercaseIdentifier(s) => Ok(s),
+            t => Err(Error::ExpectedLowercaseIdentifier(t))
+        }
     }
 
     pub fn parse_expression(&mut self) -> Result<'source, Expression<'source>> {
@@ -233,6 +249,12 @@ impl<'source> Parser<'source> {
                         },
                     }
                 }
+            },
+            Token::Var => {
+                let variable_name = self.parse_lowercase_identifier()?;
+                self.expect(&Token::Equals)?;
+                let value = self.parse_expression()?;
+                Ok(Expression::Assignment(variable_name, Box::new(value)))
             },
             t => Err(Error::UnexpectedToken(t)),
         }

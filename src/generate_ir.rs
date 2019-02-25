@@ -1,4 +1,5 @@
 use std::fmt;
+use std::collections::HashMap;
 use crate::parse::{Expression, FunctionSignature, Block};
 use crate::compile::{Type, Compiler, Error, FunctionId};
 
@@ -20,6 +21,7 @@ struct Variable {
 #[derive(Debug)]
 pub struct IrGenerator<'source> {
     compiler: &'source Compiler<'source>,
+    locals: HashMap<&'source str, VariableId>,
     variables: Vec<Variable>,
     instructions: Vec<Instruction>,
 }
@@ -28,6 +30,7 @@ impl<'source> IrGenerator<'source> {
     pub fn with_compiler(compiler: &'source Compiler<'source>) -> Self {
         Self {
             compiler,
+            locals: HashMap::new(),
             variables: vec![],
             instructions: vec![],
         }
@@ -66,8 +69,12 @@ impl<'source> IrGenerator<'source> {
                 variable
             },
             Expression::Variable(s) => {
-                self.compiler.report_error(Error::UndefinedVariable(s));
-                self.generate_error()
+                if let Some(&variable) = self.locals.get(s) {
+                    variable
+                } else {
+                    self.compiler.report_error(Error::UndefinedVariable(s));
+                    self.generate_error()
+                }
             },
             Expression::Call(ref name, ref arguments) => {
                 let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
@@ -94,6 +101,11 @@ impl<'source> IrGenerator<'source> {
                     self.compiler.report_error(Error::UndefinedFunction(name));
                     self.generate_error()
                 }
+            },
+            Expression::Assignment(name, ref value) => {
+                let variable = self.generate_ir_from_expression(value);
+                self.locals.insert(name, variable);
+                variable
             },
         }
     }

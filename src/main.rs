@@ -12,7 +12,10 @@ fn main() {
 \t123
 \t456
 (Main): int64
-\t(Frobnicate 1)";
+\tvar x = 137
+\tvar x = 893
+\tvar y = 214
+\t(Frobnicate x)";
     let mut parser = Parser::from_source(src);
 
     let mut definitions = vec![];
