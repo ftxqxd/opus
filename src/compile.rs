@@ -54,7 +54,7 @@ impl<'source> Compiler<'source> {
         println!("{:?}", error);
     }
 
-    fn resolve_type(&mut self, typ: &Expression) -> Type {
+    pub fn resolve_type(&self, typ: &Expression) -> Type {
         match *typ {
             Expression::Variable("int64") => Type::Integer64,
             Expression::Variable("nat64") => Type::Natural64,

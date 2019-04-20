@@ -47,7 +47,13 @@ impl<'source> IrGenerator<'source> {
         variable
     }
 
-    pub fn generate_ir_from_function(&mut self, _signature: &'source FunctionSignature<'source>, block: &'source Block<'source>) {
+    pub fn generate_ir_from_function(&mut self, signature: &'source FunctionSignature<'source>, block: &'source Block<'source>) {
+        for &(name, ref type_expression) in &signature.arguments {
+            let typ = self.compiler.resolve_type(type_expression);
+            let argument_id = self.new_variable(Variable { typ });
+            self.locals.insert(name, argument_id);
+        }
+
         let mut return_variable = !0;
         for expression in block {
             return_variable = self.generate_ir_from_expression(expression);
