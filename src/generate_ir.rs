@@ -60,8 +60,18 @@ impl<'source> IrGenerator<'source> {
         }
 
         if block.is_empty() {
-            self.generate_error();
+            return_variable = self.generate_error();
             self.compiler.report_error(Error::EmptyBlock);
+        }
+
+        let expected_return_type = self.compiler.resolve_type(&signature.return_type);
+        let found_return_type = &self.variables[return_variable].typ;
+        if !expected_return_type.can_unify_with(found_return_type) {
+            self.compiler.report_error(Error::UnexpectedType {
+                expected: expected_return_type,
+                found: found_return_type.clone(),
+            });
+            return_variable = self.generate_error();
         }
 
         self.instructions.push(Instruction::Return(return_variable));
