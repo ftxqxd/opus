@@ -1,13 +1,12 @@
-use crate::parse::{FunctionName, Definition, Expression};
 use std::collections::HashMap;
+use crate::parse::{FunctionName, Definition, Expression, FunctionSignature};
 
 pub type FunctionId = u32;
 
 #[derive(Debug)]
 pub struct Compiler<'source> {
-    pub resolution_map: HashMap<&'source FunctionName<'source>, (FunctionId, Function)>,
-
-    next_function_id: u32,
+    pub resolution_map: HashMap<&'source FunctionName<'source>, FunctionId>,
+    pub functions: Vec<Function>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -45,8 +44,7 @@ impl<'source> Compiler<'source> {
     pub fn new() -> Self {
         Self {
             resolution_map: HashMap::new(),
-
-            next_function_id: 0,
+            functions: vec![],
         }
     }
 
@@ -62,17 +60,20 @@ impl<'source> Compiler<'source> {
         }
     }
 
+    pub fn resolve_signature<'source2>(&self, signature: &FunctionSignature) -> Function {
+        let name = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
+        let arguments = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
+        let return_type = self.resolve_type(&signature.return_type);
+
+        Function { name, arguments, return_type }
+    }
+
     pub fn parse_definition(&mut self, definition: &'source Definition<'source>) {
         match definition {
             Definition::Function(ref signature, ..) => {
-                let name = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
-                let arguments = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
-                let return_type = self.resolve_type(&signature.return_type);
-
-                let function = Function { name, arguments, return_type };
-                let id = self.next_function_id;
-                self.next_function_id += 1;
-                self.resolution_map.insert(&signature.name, (id, function));
+                let function = self.resolve_signature(signature);
+                self.resolution_map.insert(&signature.name, self.functions.len() as FunctionId);
+                self.functions.push(function);
             },
         }
     }

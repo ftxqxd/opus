@@ -1,7 +1,7 @@
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, FunctionSignature, Block};
-use crate::compile::{Type, Compiler, Error, FunctionId};
+use crate::compile::{Type, Compiler, Error, FunctionId, Function};
 
 #[derive(Debug)]
 pub enum Instruction {
@@ -14,26 +14,36 @@ pub enum Instruction {
 type VariableId = usize;
 
 #[derive(Debug)]
-struct Variable {
-    typ: Type,
+pub struct Variable {
+    pub typ: Type,
 }
 
 #[derive(Debug)]
 pub struct IrGenerator<'source> {
-    compiler: &'source Compiler<'source>,
-    locals: HashMap<&'source str, VariableId>,
-    variables: Vec<Variable>,
-    instructions: Vec<Instruction>,
+    pub compiler: &'source Compiler<'source>,
+    pub locals: HashMap<&'source str, VariableId>,
+    pub variables: Vec<Variable>,
+    pub instructions: Vec<Instruction>,
+    pub signature: &'source FunctionSignature<'source>,
+    pub function_id: FunctionId,
 }
 
 impl<'source> IrGenerator<'source> {
-    pub fn with_compiler(compiler: &'source Compiler<'source>) -> Self {
-        Self {
+    pub fn from_function(compiler: &'source Compiler<'source>, signature: &'source FunctionSignature<'source>, block: &'source Block<'source>) -> Self {
+        let mut this = Self {
             compiler,
             locals: HashMap::new(),
             variables: vec![],
             instructions: vec![],
-        }
+            signature,
+            function_id: compiler.resolution_map[&*signature.name],
+        };
+        this.generate_ir_from_function(block);
+        this
+    }
+
+    pub fn function(&self) -> &'source Function {
+        &self.compiler.functions[self.function_id as usize]
     }
 
     fn new_variable(&mut self, variable: Variable) -> VariableId {
@@ -47,8 +57,8 @@ impl<'source> IrGenerator<'source> {
         variable
     }
 
-    pub fn generate_ir_from_function(&mut self, signature: &'source FunctionSignature<'source>, block: &'source Block<'source>) {
-        for &(name, ref type_expression) in &signature.arguments {
+    fn generate_ir_from_function(&mut self, block: &'source Block<'source>) {
+        for &(name, ref type_expression) in &self.signature.arguments {
             let typ = self.compiler.resolve_type(type_expression);
             let argument_id = self.new_variable(Variable { typ });
             self.locals.insert(name, argument_id);
@@ -64,7 +74,7 @@ impl<'source> IrGenerator<'source> {
             self.compiler.report_error(Error::EmptyBlock);
         }
 
-        let expected_return_type = self.compiler.resolve_type(&signature.return_type);
+        let expected_return_type = self.compiler.resolve_type(&self.signature.return_type);
         let found_return_type = &self.variables[return_variable].typ;
         if !expected_return_type.can_unify_with(found_return_type) {
             self.compiler.report_error(Error::UnexpectedType {
@@ -95,7 +105,8 @@ impl<'source> IrGenerator<'source> {
             Expression::Call(ref name, ref arguments) => {
                 let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
 
-                if let Some(&(id, ref function)) = self.compiler.resolution_map.get(&**name) {
+                if let Some(&id) = self.compiler.resolution_map.get(&**name) {
+                    let function = &self.compiler.functions[id as usize];
                     debug_assert_eq!(function.arguments.len(), arguments.len());
 
                     let mut had_error = false;
@@ -129,8 +140,10 @@ impl<'source> IrGenerator<'source> {
 
 impl<'source> fmt::Display for IrGenerator<'source> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        writeln!(f, "{}", self.signature)?;
+
         for (i, variable) in self.variables.iter().enumerate() {
-            writeln!(f, "var %{}: {:?}", i, variable.typ)?;
+            writeln!(f, "  var %{}: {:?}", i, variable.typ)?;
         }
 
         let mut first = true;
@@ -139,6 +152,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 writeln!(f, "")?;
             }
             first = false;
+
+            write!(f, "  ")?;
 
             match *instruction {
                 Instruction::ConstantInteger(destination, value) => write!(f, "%{} = {}", destination, value)?,

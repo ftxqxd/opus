@@ -1,3 +1,5 @@
+use std::fmt;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token<'source> {
     LeftParenthesis,
@@ -42,6 +44,35 @@ pub struct FunctionSignature<'source> {
     pub arguments: Vec<(&'source str, Expression<'source>)>,
 
     pub return_type: Expression<'source>,
+}
+
+impl<'source> fmt::Display for FunctionSignature<'source> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(")?;
+
+        let mut i = 0;
+
+        let mut written_anything = false;
+
+        for part in self.name.iter() {
+            if written_anything {
+                write!(f, " ")?;
+            }
+
+            match *part {
+                Some(x) => write!(f, "{}", x)?,
+                None => {
+                    // FIXME: implement Display for Expression
+                    write!(f, "{}: {:?}", self.arguments[i].0, self.arguments[i].1)?;
+                    i += 1;
+                },
+            }
+
+            written_anything = true;
+        }
+
+        write!(f, ")")
+    }
 }
 
 #[derive(Debug)]
