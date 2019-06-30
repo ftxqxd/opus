@@ -1,12 +1,12 @@
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, FunctionSignature, Block};
-use crate::compile::{Type, Compiler, Error, FunctionId, Function};
+use crate::compile::{Type, Compiler, Error, Function};
 
 #[derive(Debug)]
-pub enum Instruction {
+pub enum Instruction<'source> {
     ConstantInteger(VariableId, u64),
-    Call(VariableId, FunctionId, Box<[VariableId]>),
+    Call(VariableId, &'source Function, Box<[VariableId]>),
     Return(VariableId),
     Error(VariableId),
 }
@@ -23,9 +23,9 @@ pub struct IrGenerator<'source> {
     pub compiler: &'source Compiler<'source>,
     pub locals: HashMap<&'source str, VariableId>,
     pub variables: Vec<Variable>,
-    pub instructions: Vec<Instruction>,
+    pub instructions: Vec<Instruction<'source>>,
     pub signature: &'source FunctionSignature<'source>,
-    pub function_id: FunctionId,
+    pub function: &'source Function,
 }
 
 impl<'source> IrGenerator<'source> {
@@ -36,14 +36,10 @@ impl<'source> IrGenerator<'source> {
             variables: vec![],
             instructions: vec![],
             signature,
-            function_id: compiler.resolution_map[&*signature.name],
+            function: &compiler.resolution_map[&*signature.name],
         };
         this.generate_ir_from_function(block);
         this
-    }
-
-    pub fn function(&self) -> &'source Function {
-        &self.compiler.functions[self.function_id as usize]
     }
 
     fn new_variable(&mut self, variable: Variable) -> VariableId {
@@ -105,8 +101,7 @@ impl<'source> IrGenerator<'source> {
             Expression::Call(ref name, ref arguments) => {
                 let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
 
-                if let Some(&id) = self.compiler.resolution_map.get(&**name) {
-                    let function = &self.compiler.functions[id as usize];
+                if let Some(function) = self.compiler.resolution_map.get(&**name) {
                     debug_assert_eq!(function.arguments.len(), arguments.len());
 
                     let mut had_error = false;
@@ -122,7 +117,7 @@ impl<'source> IrGenerator<'source> {
                     }
 
                     let variable = self.new_variable(Variable { typ: function.return_type.clone()});
-                    self.instructions.push(Instruction::Call(variable, id, argument_variables.into()));
+                    self.instructions.push(Instruction::Call(variable, function, argument_variables.into()));
                     variable
                 } else {
                     self.compiler.report_error(Error::UndefinedFunction(name));

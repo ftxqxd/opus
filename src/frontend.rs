@@ -27,6 +27,7 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
     c::initialize(&compiler, output).unwrap();
     for &Definition::Function(ref sig, ref block) in &definitions {
         let ir_generator = IrGenerator::from_function(&compiler, sig, block);
+        println!("{}", ir_generator);
         c::translate_ir_to_c(&ir_generator, output).unwrap();
     }
 }

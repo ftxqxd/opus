@@ -47,8 +47,8 @@ pub struct FunctionSignature<'source> {
 }
 
 impl<'source> fmt::Display for FunctionSignature<'source> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(")?;
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "(")?;
 
         let mut i = 0;
 
@@ -56,14 +56,14 @@ impl<'source> fmt::Display for FunctionSignature<'source> {
 
         for part in self.name.iter() {
             if written_anything {
-                write!(f, " ")?;
+                write!(formatter, " ")?;
             }
 
             match *part {
-                Some(x) => write!(f, "{}", x)?,
+                Some(x) => write!(formatter, "{}", x)?,
                 None => {
                     // FIXME: implement Display for Expression
-                    write!(f, "{}: {:?}", self.arguments[i].0, self.arguments[i].1)?;
+                    write!(formatter, "{}: {:?}", self.arguments[i].0, self.arguments[i].1)?;
                     i += 1;
                 },
             }
@@ -71,7 +71,7 @@ impl<'source> fmt::Display for FunctionSignature<'source> {
             written_anything = true;
         }
 
-        write!(f, ")")
+        write!(formatter, ")")
     }
 }
 

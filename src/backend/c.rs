@@ -14,7 +14,7 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
     writeln!(output, "#include <stdint.h>")?;
 
     // Prototypes
-    for function in compiler.functions.iter() {
+    for (_, function) in compiler.resolution_map.iter() {
         translate_function_signature_to_c(compiler, function, output)?;
         writeln!(output, ";")?;
     }
@@ -28,16 +28,14 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
 /// Generate C code for a single function from Opus IR and write the generated code to the output
 /// writer `output`.
 pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Result<()> {
-    let function = ir.function();
-
     ////// Generate function signature //////
-    translate_function_signature_to_c(&ir.compiler, function, output)?;
+    translate_function_signature_to_c(&ir.compiler, ir.function, output)?;
     write!(output, " {{\n")?;
 
     ////// Generate function body //////
     // Write variables
     for (i, variable) in ir.variables.iter().enumerate() {
-        if i < function.arguments.len() {
+        if i < ir.function.arguments.len() {
             continue
         }
 
@@ -88,12 +86,12 @@ fn translate_type_to_c<W: Write>(_compiler: &Compiler, output: &mut W, typ: &Typ
     }
 }
 
-fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instruction: &Instruction) -> io::Result<()> {
+fn translate_instruction_to_c<W: Write>(_ir: &IrGenerator, output: &mut W, instruction: &Instruction) -> io::Result<()> {
     match *instruction {
         Instruction::ConstantInteger(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
-        Instruction::Call(destination, function_id, ref arguments) => {
+        Instruction::Call(destination, function, ref arguments) => {
             write!(output, "var{} = ", destination)?;
-            mangle_function_name(&ir.compiler.functions[function_id as usize], output)?;
+            mangle_function_name(function, output)?;
             write!(output, "(")?;
             for (i, argument) in arguments.iter().enumerate() {
                 if i > 0 {
