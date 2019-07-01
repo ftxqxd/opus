@@ -59,6 +59,7 @@ pub enum Error<'source> {
     UndefinedVariable(&'source str),
     UndefinedFunction(&'source FunctionName<'source>),
     UnexpectedType { expected: Type, found: Type },
+    FunctionMightNotReturn,
 }
 
 impl Type {

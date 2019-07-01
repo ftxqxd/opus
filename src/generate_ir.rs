@@ -63,7 +63,10 @@ impl<'source> IrGenerator<'source> {
             self.locals.insert(name, argument_id);
         }
 
-        self.generate_ir_from_block(block);
+        let diverges = self.generate_ir_from_block(block);
+        if !diverges {
+            self.compiler.report_error(Error::FunctionMightNotReturn);
+        }
 
         // Push a nop to the end of instructions in case the function ends with a branch
         self.instructions.push(Instruction::Nop);
@@ -73,13 +76,23 @@ impl<'source> IrGenerator<'source> {
         }
     }
 
-    fn generate_ir_from_block(&mut self, block: &'source Block<'source>) {
+    /// Generate IR for a block of statements.  Return `true` if the block is guaranteed to
+    /// diverge.
+    fn generate_ir_from_block(&mut self, block: &'source Block<'source>) -> bool {
+        let mut diverges = false;
+
         for statement in block {
-            self.generate_ir_from_statement(statement);
+            if self.generate_ir_from_statement(statement) {
+                diverges = true;
+            }
         }
+
+        diverges
     }
 
-    fn generate_ir_from_statement(&mut self, statement: &'source Statement<'source>) {
+    /// Generate IR for a single statement.  Return `true` if the statement is guaranteed to
+    /// diverge.
+    fn generate_ir_from_statement(&mut self, statement: &'source Statement<'source>) -> bool {
         match *statement {
             Statement::Expression(ref expression) => {
                 self.generate_ir_from_expression(expression);
@@ -96,20 +109,23 @@ impl<'source> IrGenerator<'source> {
                 } else {
                     self.instructions.push(Instruction::Return(return_variable));
                 }
+                return true
             },
             Statement::If(ref condition, ref then_block, ref else_block) => {
                 let condition_variable = self.generate_ir_from_expression(condition);
+
+                let mut diverges = true;
 
                 let branch = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
 
                 let then_branch = self.instructions.len();
-                self.generate_ir_from_block(then_block);
+                diverges &= self.generate_ir_from_block(then_block);
                 let then_jump = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
 
                 let else_branch = self.instructions.len();
-                self.generate_ir_from_block(else_block);
+                diverges &= self.generate_ir_from_block(else_block);
                 let else_jump = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
 
@@ -117,8 +133,12 @@ impl<'source> IrGenerator<'source> {
                 self.instructions[branch] = Instruction::Branch(condition_variable, then_branch, else_branch);
                 self.instructions[then_jump] = Instruction::Jump(merge);
                 self.instructions[else_jump] = Instruction::Jump(merge);
+
+                return diverges
             },
         }
+
+        false
     }
 
     fn generate_ir_from_expression(&mut self, expression: &'source Expression<'source>) -> VariableId {
