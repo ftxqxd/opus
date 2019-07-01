@@ -129,13 +129,11 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
 ///
 /// The mangling procedure converts signatures like
 ///
-///     (Frobnicate z: int64 With x: nat64)
+///     (Frobnicate :int64 With :nat64)
 ///
 /// to names like
 ///
 ///     _opus_Frobnicate__int_With__nat64.
-///
-/// Note that parameter names are discarded.
 fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Result<()> {
     write!(output, "_opus")?;
 
