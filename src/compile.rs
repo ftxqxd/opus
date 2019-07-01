@@ -55,11 +55,12 @@ impl fmt::Display for Function {
 
 #[derive(Debug)]
 pub enum Error<'source> {
-    EmptyBlock,
     UndefinedVariable(&'source str),
     UndefinedFunction(&'source FunctionName<'source>),
     UnexpectedType { expected: Type, found: Type },
     FunctionMightNotReturn,
+    BreakOutsideLoop,
+    ContinueOutsideLoop,
 }
 
 impl Type {

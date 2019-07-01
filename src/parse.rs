@@ -15,6 +15,9 @@ pub enum Token<'source> {
     Return,
     If,
     Else,
+    While,
+    Break,
+    Continue,
 }
 
 #[derive(Debug)]
@@ -30,6 +33,9 @@ pub enum Statement<'source> {
     Expression(Expression<'source>),
     Return(Expression<'source>),
     If(Expression<'source>, Box<Block<'source>>, Box<Block<'source>>),
+    While(Expression<'source>, Box<Block<'source>>, Box<Block<'source>>),
+    Break,
+    Continue,
 }
 
 pub type Block<'source> = [Statement<'source>];
@@ -236,6 +242,9 @@ impl<'source> Parser<'source> {
                     "return" => Ok(Token::Return),
                     "if" => Ok(Token::If),
                     "else" => Ok(Token::Else),
+                    "while" => Ok(Token::While),
+                    "break" => Ok(Token::Break),
+                    "continue" => Ok(Token::Continue),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -308,7 +317,7 @@ impl<'source> Parser<'source> {
                 let _ = self.parse_token();
                 Ok(Statement::Return(self.parse_expression()?))
             },
-            Token::If => {
+            token @ Token::If | token @ Token::While => {
                 let _ = self.parse_token();
                 let condition = self.parse_expression()?;
                 let then = self.parse_block()?;
@@ -320,7 +329,19 @@ impl<'source> Parser<'source> {
                 } else {
                     els = Box::new([]);
                 }
-                Ok(Statement::If(condition, then, els))
+                Ok(match token {
+                    Token::If => Statement::If,
+                    Token::While => Statement::While,
+                    _ => unreachable!(),
+                }(condition, then, els))
+            },
+            Token::Break => {
+                let _ = self.parse_token();
+                Ok(Statement::Break)
+            },
+            Token::Continue => {
+                let _ = self.parse_token();
+                Ok(Statement::Continue)
             },
             _ => Ok(Statement::Expression(self.parse_expression()?)),
         }

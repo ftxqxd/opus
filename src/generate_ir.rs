@@ -1,3 +1,4 @@
+use std::mem;
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, Statement, FunctionSignature, Block};
@@ -11,6 +12,7 @@ pub enum Instruction<'source> {
     Jump(usize),
     Branch(VariableId, usize, usize),
     Nop,
+    BreakPlaceholder,
     Error(VariableId),
 }
 
@@ -29,6 +31,13 @@ pub struct IrGenerator<'source> {
     pub instructions: Vec<Instruction<'source>>,
     pub signature: &'source FunctionSignature<'source>,
     pub function: &'source Function,
+
+    /// A list of instructions which represent `break` statements, to be replaced with real `Jump`
+    /// instructions once their containing loop has been generated.
+    break_instructions_to_insert: Vec<usize>,
+    /// The instruction index of the beginning of the innermost loop at the current point of
+    /// compilation.  This is where a `continue` statement jumps back to.
+    innermost_loop_begin: Option<usize>,
 }
 
 impl<'source> IrGenerator<'source> {
@@ -40,6 +49,8 @@ impl<'source> IrGenerator<'source> {
             instructions: vec![],
             signature,
             function: &compiler.resolution_map[&*signature.name],
+            break_instructions_to_insert: vec![],
+            innermost_loop_begin: None,
         };
         this.generate_ir_from_function(block);
         this
@@ -68,12 +79,12 @@ impl<'source> IrGenerator<'source> {
             self.compiler.report_error(Error::FunctionMightNotReturn);
         }
 
+        for _ in &self.break_instructions_to_insert {
+            self.compiler.report_error(Error::BreakOutsideLoop);
+        }
+
         // Push a nop to the end of instructions in case the function ends with a branch
         self.instructions.push(Instruction::Nop);
-
-        if block.is_empty() {
-            self.compiler.report_error(Error::EmptyBlock);
-        }
     }
 
     /// Generate IR for a block of statements.  Return `true` if the block is guaranteed to
@@ -135,6 +146,49 @@ impl<'source> IrGenerator<'source> {
                 self.instructions[else_jump] = Instruction::Jump(merge);
 
                 return diverges
+            },
+            Statement::While(ref condition, ref then_block, ref else_block) => {
+                let loop_start = self.instructions.len();
+
+                let condition_variable = self.generate_ir_from_expression(condition);
+
+                let branch = self.instructions.len();
+                self.instructions.push(Instruction::Nop);
+
+                let old_break_instructions_to_insert = mem::replace(&mut self.break_instructions_to_insert, vec![]);
+                let old_innermost_loop_begin = self.innermost_loop_begin;
+                self.innermost_loop_begin = Some(loop_start);
+                let then_branch = self.instructions.len();
+                self.generate_ir_from_block(then_block);
+                self.instructions.push(Instruction::Jump(loop_start));
+                let new_break_instructions_to_insert = mem::replace(&mut self.break_instructions_to_insert, old_break_instructions_to_insert);
+                self.innermost_loop_begin = old_innermost_loop_begin;
+
+                let else_branch = self.instructions.len();
+                let diverges = self.generate_ir_from_block(else_block);
+                let else_jump = self.instructions.len();
+                self.instructions.push(Instruction::Nop);
+
+                let merge = self.instructions.len();
+                self.instructions[branch] = Instruction::Branch(condition_variable, then_branch, else_branch);
+                self.instructions[else_jump] = Instruction::Jump(merge);
+                // Fill in break instructions
+                for index in new_break_instructions_to_insert {
+                    self.instructions[index] = Instruction::Jump(merge);
+                }
+
+                return diverges
+            },
+            Statement::Break => {
+                self.break_instructions_to_insert.push(self.instructions.len());
+                self.instructions.push(Instruction::BreakPlaceholder);
+            },
+            Statement::Continue => {
+                if let Some(index) = self.innermost_loop_begin {
+                    self.instructions.push(Instruction::Jump(index));
+                } else {
+                    self.compiler.report_error(Error::ContinueOutsideLoop);
+                }
             },
         }
 
@@ -220,6 +274,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Jump(index) => write!(f, "jump @{:<03}", index)?,
                 Instruction::Branch(variable, index1, index2) => write!(f, "branch %{}, @{:<03}, @{:<03}", variable, index1, index2)?,
                 Instruction::Nop => write!(f, "nop")?,
+                Instruction::BreakPlaceholder => write!(f, "<break placeholder>")?,
                 Instruction::Error(destination) => write!(f, "%{} = error", destination)?,
             }
         }
