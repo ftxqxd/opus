@@ -52,9 +52,9 @@ pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Resu
     }
 
     // Write instructions
-    for instruction in &ir.instructions {
+    for instruction_index in 0..ir.instructions.len() {
         write!(output, "\t")?;
-        translate_instruction_to_c(ir, output, instruction)?;
+        translate_instruction_to_c(ir, output, instruction_index)?;
     }
 
     write!(output, "}}\n")?;
@@ -94,7 +94,9 @@ fn translate_type_to_c<W: Write>(_compiler: &Compiler, output: &mut W, typ: &Typ
     }
 }
 
-fn translate_instruction_to_c<W: Write>(_ir: &IrGenerator, output: &mut W, instruction: &Instruction) -> io::Result<()> {
+fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instruction_index: usize) -> io::Result<()> {
+    write!(output, "i{}: ", instruction_index)?;
+    let instruction = &ir.instructions[instruction_index];
     match *instruction {
         Instruction::ConstantInteger(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
         Instruction::Call(destination, function, ref arguments) => {
@@ -110,6 +112,13 @@ fn translate_instruction_to_c<W: Write>(_ir: &IrGenerator, output: &mut W, instr
             writeln!(output, ");")?;
         },
         Instruction::Return(variable) => writeln!(output, "return var{};", variable)?,
+        Instruction::Jump(index) => {
+            writeln!(output, "goto i{};", index)?;
+        },
+        Instruction::Branch(condition_variable, if_index, then_index) => {
+            writeln!(output, "if (var{}) goto i{}; else goto i{};", condition_variable, if_index, then_index)?;
+        },
+        Instruction::Nop => {},
         Instruction::Error(variable) => writeln!(output, "/* error with var{} */", variable)?,
     }
     Ok(())

@@ -8,6 +8,9 @@ pub enum Instruction<'source> {
     ConstantInteger(VariableId, u64),
     Call(VariableId, &'source Function, Box<[VariableId]>),
     Return(VariableId),
+    Jump(usize),
+    Branch(VariableId, usize, usize),
+    Nop,
     Error(VariableId),
 }
 
@@ -60,12 +63,16 @@ impl<'source> IrGenerator<'source> {
             self.locals.insert(name, argument_id);
         }
 
-        for statement in block {
-            self.generate_ir_from_statement(statement);
-        }
+        self.generate_ir_from_block(block);
 
         if block.is_empty() {
             self.compiler.report_error(Error::EmptyBlock);
+        }
+    }
+
+    fn generate_ir_from_block(&mut self, block: &'source Block<'source>) {
+        for statement in block {
+            self.generate_ir_from_statement(statement);
         }
     }
 
@@ -86,6 +93,27 @@ impl<'source> IrGenerator<'source> {
                 } else {
                     self.instructions.push(Instruction::Return(return_variable));
                 }
+            },
+            Statement::If(ref condition, ref then_block, ref else_block) => {
+                let condition_variable = self.generate_ir_from_expression(condition);
+
+                let branch = self.instructions.len();
+                self.instructions.push(Instruction::Nop);
+
+                let then_branch = self.instructions.len();
+                self.generate_ir_from_block(then_block);
+                let then_jump = self.instructions.len();
+                self.instructions.push(Instruction::Nop);
+
+                let else_branch = self.instructions.len();
+                self.generate_ir_from_block(else_block);
+                let else_jump = self.instructions.len();
+                self.instructions.push(Instruction::Nop);
+
+                let merge = self.instructions.len();
+                self.instructions[branch] = Instruction::Branch(condition_variable, then_branch, else_branch);
+                self.instructions[then_jump] = Instruction::Jump(merge);
+                self.instructions[else_jump] = Instruction::Jump(merge);
             },
         }
     }
@@ -149,13 +177,13 @@ impl<'source> fmt::Display for IrGenerator<'source> {
         }
 
         let mut first = true;
-        for instruction in &self.instructions {
+        for (instruction_index, instruction) in self.instructions.iter().enumerate() {
             if !first {
                 writeln!(f, "")?;
             }
             first = false;
 
-            write!(f, "  ")?;
+            write!(f, "{:<03} ", instruction_index)?;
 
             match *instruction {
                 Instruction::ConstantInteger(destination, value) => write!(f, "%{} = {}", destination, value)?,
@@ -166,6 +194,9 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     }
                 },
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
+                Instruction::Jump(index) => write!(f, "jump @{}", index)?,
+                Instruction::Branch(variable, index1, index2) => write!(f, "branch %{}, @{}, @{}", variable, index1, index2)?,
+                Instruction::Nop => write!(f, "nop")?,
                 Instruction::Error(destination) => write!(f, "%{} = error", destination)?,
             }
         }

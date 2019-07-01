@@ -13,6 +13,8 @@ pub enum Token<'source> {
     Dedent,
     Var,
     Return,
+    If,
+    Else,
 }
 
 #[derive(Debug)]
@@ -27,6 +29,7 @@ pub enum Expression<'source> {
 pub enum Statement<'source> {
     Expression(Expression<'source>),
     Return(Expression<'source>),
+    If(Expression<'source>, Box<Block<'source>>, Box<Block<'source>>),
 }
 
 pub type Block<'source> = [Statement<'source>];
@@ -231,6 +234,8 @@ impl<'source> Parser<'source> {
                 match identifier {
                     "var" => Ok(Token::Var),
                     "return" => Ok(Token::Return),
+                    "if" => Ok(Token::If),
+                    "else" => Ok(Token::Else),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -302,6 +307,33 @@ impl<'source> Parser<'source> {
             Token::Return => {
                 let _ = self.parse_token();
                 Ok(Statement::Return(self.parse_expression()?))
+            },
+            Token::If => {
+                let _ = self.parse_token();
+                let condition = self.parse_expression()?;
+                let then = self.parse_block()?;
+                let mut els: Box<Block> = Box::new([]);
+                let mut chain_end = &mut els;
+                while let Ok(Token::Else) = self.peek_token() {
+                    let _ = self.parse_token()?;
+                    match self.peek_token()? {
+                        Token::If => {
+                            let _ = self.parse_token();
+                            let condition2 = self.parse_expression()?;
+                            let then = self.parse_block()?;
+                            *chain_end = Box::new([Statement::If(condition2, then, Box::new([]))]);
+                            match chain_end[0] {
+                                Statement::If(_, _, ref mut x) => chain_end = x,
+                                _ => unreachable!(),
+                            }
+                        },
+                        _ => {
+                            *chain_end = self.parse_block()?;
+                            break
+                        }
+                    }
+                }
+                Ok(Statement::If(condition, then, els))
             },
             _ => Ok(Statement::Expression(self.parse_expression()?)),
         }
