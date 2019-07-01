@@ -12,6 +12,7 @@ pub enum Token<'source> {
     Indent,
     Dedent,
     Var,
+    Return,
 }
 
 #[derive(Debug)]
@@ -22,7 +23,13 @@ pub enum Expression<'source> {
     Assignment(&'source str, Box<Expression<'source>>),
 }
 
-pub type Block<'source> = [Expression<'source>];
+#[derive(Debug)]
+pub enum Statement<'source> {
+    Expression(Expression<'source>),
+    Return(Expression<'source>),
+}
+
+pub type Block<'source> = [Statement<'source>];
 
 #[derive(Debug)]
 pub enum Definition<'source> {
@@ -223,6 +230,7 @@ impl<'source> Parser<'source> {
                 let identifier = &old_source[0..byte_len];
                 match identifier {
                     "var" => Ok(Token::Var),
+                    "return" => Ok(Token::Return),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -231,8 +239,6 @@ impl<'source> Parser<'source> {
         }
     }
 
-    // In theory, we shouldn't need self to be &mut here, but it's easier
-    // if it is and isn't a problem in practice.
     fn peek_token(&self) -> Result<'source, Token<'source>> {
         let mut other = self.clone();
         other.parse_token()
@@ -254,7 +260,7 @@ impl<'source> Parser<'source> {
         }
     }
 
-    pub fn parse_expression(&mut self) -> Result<'source, Expression<'source>> {
+    fn parse_expression(&mut self) -> Result<'source, Expression<'source>> {
         match self.parse_token()? {
             Token::Integer(i) => Ok(Expression::Integer(i)),
             Token::LowercaseIdentifier(s) => Ok(Expression::Variable(s)),
@@ -291,20 +297,30 @@ impl<'source> Parser<'source> {
         }
     }
 
+    fn parse_statement(&mut self) -> Result<'source, Statement<'source>> {
+        match self.peek_token()? {
+            Token::Return => {
+                let _ = self.parse_token();
+                Ok(Statement::Return(self.parse_expression()?))
+            },
+            _ => Ok(Statement::Expression(self.parse_expression()?)),
+        }
+    }
+
     /// Parse a block, including its opening `Indent` and closing `Dedent` tokens.
     fn parse_block(&mut self) -> Result<'source, Box<Block<'source>>> {
-        let mut expressions = vec![];
+        let mut statements = vec![];
 
         self.expect(&Token::Indent)?;
         loop {
             match self.peek_token()? {
                 Token::Dedent => break,
-                _ => expressions.push(self.parse_expression()?),
+                _ => statements.push(self.parse_statement()?),
             }
         }
         let _ = self.parse_token(); // Skip past the Token::Dedent
 
-        Ok(expressions.into())
+        Ok(statements.into())
     }
 
     pub fn parse_definition(&mut self) -> Result<'source, Definition<'source>> {

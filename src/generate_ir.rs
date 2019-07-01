@@ -1,6 +1,6 @@
 use std::fmt;
 use std::collections::HashMap;
-use crate::parse::{Expression, FunctionSignature, Block};
+use crate::parse::{Expression, Statement, FunctionSignature, Block};
 use crate::compile::{Type, Compiler, Error, Function};
 
 #[derive(Debug)]
@@ -60,27 +60,34 @@ impl<'source> IrGenerator<'source> {
             self.locals.insert(name, argument_id);
         }
 
-        let mut return_variable = !0;
-        for expression in block {
-            return_variable = self.generate_ir_from_expression(expression);
+        for statement in block {
+            self.generate_ir_from_statement(statement);
         }
 
         if block.is_empty() {
-            return_variable = self.generate_error();
             self.compiler.report_error(Error::EmptyBlock);
         }
+    }
 
-        let expected_return_type = self.compiler.resolve_type(&self.signature.return_type);
-        let found_return_type = &self.variables[return_variable].typ;
-        if !expected_return_type.can_unify_with(found_return_type) {
-            self.compiler.report_error(Error::UnexpectedType {
-                expected: expected_return_type,
-                found: found_return_type.clone(),
-            });
-            return_variable = self.generate_error();
+    fn generate_ir_from_statement(&mut self, statement: &'source Statement<'source>) {
+        match *statement {
+            Statement::Expression(ref expression) => {
+                self.generate_ir_from_expression(expression);
+            },
+            Statement::Return(ref expression) => {
+                let return_variable = self.generate_ir_from_expression(expression);
+
+                let expected_type = &self.function.return_type;
+                let found_type = &self.variables[return_variable].typ;
+                if !expected_type.can_unify_with(found_type) {
+                    self.compiler.report_error(Error::UnexpectedType { expected: expected_type.clone(), found: found_type.clone() });
+                    let error = self.generate_error();
+                    self.instructions.push(Instruction::Return(error));
+                } else {
+                    self.instructions.push(Instruction::Return(return_variable));
+                }
+            },
         }
-
-        self.instructions.push(Instruction::Return(return_variable));
     }
 
     fn generate_ir_from_expression(&mut self, expression: &'source Expression<'source>) -> VariableId {
