@@ -12,12 +12,19 @@ use crate::compile::{Function, Type, Compiler};
 pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<()> {
     // Headers
     writeln!(output, "#include <stdint.h>")?;
+    writeln!(output, "#include <stdio.h>")?;
+
+    // Builtin types
+    writeln!(output, "typedef uint8_t _opust_null;")?;
 
     // Prototypes
     for (_, function) in compiler.resolution_map.iter() {
         translate_function_signature_to_c(compiler, function, output)?;
         writeln!(output, ";")?;
     }
+
+    // Builtins
+    writeln!(output, r#"_opust_null _opus_Print__int64(int64_t var0) {{ printf("%d\n", var0); return 0; }}"#)?;
 
     // Main
     writeln!(output, "int main(void) {{ return _opus_Main(); }}")?;
@@ -82,7 +89,8 @@ fn translate_type_to_c<W: Write>(_compiler: &Compiler, output: &mut W, typ: &Typ
     match *typ {
         Type::Integer64 => write!(output, "int64_t"),
         Type::Natural64 => write!(output, "uint64_t"),
-        Type::Error => write!(output, "void"),
+        Type::Null => write!(output, "_opust_null"),
+        Type::Error => write!(output, "internal_compiler_error"),
     }
 }
 
@@ -143,6 +151,7 @@ fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
     match *typ {
         Type::Integer64 => write!(output, "int64"),
         Type::Natural64 => write!(output, "nat64"),
+        Type::Null => write!(output, "null"),
         Type::Error => write!(output, "error"),
     }
 }

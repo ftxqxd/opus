@@ -24,10 +24,21 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
         compiler.parse_definition(definition);
     }
 
+    let mut translate = true;
     c::initialize(&compiler, output).unwrap();
     for &Definition::Function(ref sig, ref block) in &definitions {
         let ir_generator = IrGenerator::from_function(&compiler, sig, block);
-        println!("{}", ir_generator);
-        c::translate_ir_to_c(&ir_generator, output).unwrap();
+
+        if compiler.has_errors.get() {
+            translate = false;
+        }
+
+        if translate {
+            c::translate_ir_to_c(&ir_generator, output).unwrap();
+        }
+    }
+
+    if !translate {
+        panic!("compilation unsuccessful");
     }
 }
