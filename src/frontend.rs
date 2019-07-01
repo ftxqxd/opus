@@ -29,6 +29,7 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
     for &Definition::Function(ref sig, ref block) in &definitions {
         let ir_generator = IrGenerator::from_function(&compiler, sig, block);
 
+        println!("{}", ir_generator);
         if compiler.has_errors.get() {
             translate = false;
         }

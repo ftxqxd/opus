@@ -312,26 +312,13 @@ impl<'source> Parser<'source> {
                 let _ = self.parse_token();
                 let condition = self.parse_expression()?;
                 let then = self.parse_block()?;
-                let mut els: Box<Block> = Box::new([]);
-                let mut chain_end = &mut els;
-                while let Ok(Token::Else) = self.peek_token() {
-                    let _ = self.parse_token()?;
-                    match self.peek_token()? {
-                        Token::If => {
-                            let _ = self.parse_token();
-                            let condition2 = self.parse_expression()?;
-                            let then = self.parse_block()?;
-                            *chain_end = Box::new([Statement::If(condition2, then, Box::new([]))]);
-                            match chain_end[0] {
-                                Statement::If(_, _, ref mut x) => chain_end = x,
-                                _ => unreachable!(),
-                            }
-                        },
-                        _ => {
-                            *chain_end = self.parse_block()?;
-                            break
-                        }
-                    }
+
+                let els: Box<Block>;
+                if let Ok(Token::Else) = self.peek_token() {
+                    let _ = self.parse_token();
+                    els = self.parse_block()?;
+                } else {
+                    els = Box::new([]);
                 }
                 Ok(Statement::If(condition, then, els))
             },
@@ -343,7 +330,16 @@ impl<'source> Parser<'source> {
     fn parse_block(&mut self) -> Result<'source, Box<Block<'source>>> {
         let mut statements = vec![];
 
-        self.expect(&Token::Indent)?;
+        match self.peek_token()? {
+            Token::Indent => {
+                let _ = self.parse_token();
+            },
+            _ => {
+                // Allow single-statement blocks
+                return Ok(Box::new([self.parse_statement()?]))
+            }
+        }
+
         loop {
             match self.peek_token()? {
                 Token::Dedent => break,

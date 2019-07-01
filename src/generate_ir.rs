@@ -65,6 +65,9 @@ impl<'source> IrGenerator<'source> {
 
         self.generate_ir_from_block(block);
 
+        // Push a nop to the end of instructions in case the function ends with a branch
+        self.instructions.push(Instruction::Nop);
+
         if block.is_empty() {
             self.compiler.report_error(Error::EmptyBlock);
         }
@@ -173,7 +176,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
         writeln!(f, "{}", self.signature)?;
 
         for (i, variable) in self.variables.iter().enumerate() {
-            writeln!(f, "  var %{}: {:?}", i, variable.typ)?;
+            writeln!(f, "VAR %{}: {:?}", i, variable.typ)?;
         }
 
         let mut first = true;
@@ -194,8 +197,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     }
                 },
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
-                Instruction::Jump(index) => write!(f, "jump @{}", index)?,
-                Instruction::Branch(variable, index1, index2) => write!(f, "branch %{}, @{}, @{}", variable, index1, index2)?,
+                Instruction::Jump(index) => write!(f, "jump @{:<03}", index)?,
+                Instruction::Branch(variable, index1, index2) => write!(f, "branch %{}, @{:<03}, @{:<03}", variable, index1, index2)?,
                 Instruction::Nop => write!(f, "nop")?,
                 Instruction::Error(destination) => write!(f, "%{} = error", destination)?,
             }
