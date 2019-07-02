@@ -1,3 +1,4 @@
+use crate::compile::Compiler;
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,21 +25,21 @@ pub enum Token<'source> {
 pub enum Expression<'source> {
     Integer(u64),
     Variable(&'source str),
-    Call(Box<FunctionName<'source>>, Vec<Expression<'source>>),
+    Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Assignment(&'source str, Box<Expression<'source>>),
 }
 
 #[derive(Debug)]
 pub enum Statement<'source> {
-    Expression(Expression<'source>),
-    Return(Expression<'source>),
-    If(Expression<'source>, Box<Block<'source>>, Box<Block<'source>>),
-    While(Expression<'source>, Box<Block<'source>>, Box<Block<'source>>),
+    Expression(Box<Expression<'source>>),
+    Return(Box<Expression<'source>>),
+    If(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
+    While(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
     Break,
     Continue,
 }
 
-pub type Block<'source> = [Statement<'source>];
+pub type Block<'source> = [Box<Statement<'source>>];
 
 #[derive(Debug)]
 pub enum Definition<'source> {
@@ -57,9 +58,9 @@ pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
     pub name: Box<FunctionName<'source>>,
     /// A list of `(name, type)` representing the names & types of the function's arguments.
-    pub arguments: Vec<(&'source str, Expression<'source>)>,
+    pub arguments: Vec<(&'source str, Box<Expression<'source>>)>,
 
-    pub return_type: Expression<'source>,
+    pub return_type: Box<Expression<'source>>,
 }
 
 impl<'source> fmt::Display for FunctionSignature<'source> {
@@ -100,12 +101,13 @@ pub enum Error<'source> {
     ExpectedLowercaseIdentifier(Token<'source>),
 }
 
-#[derive(Debug, Clone)]
-pub struct Parser<'source> {
+#[derive(Debug)]
+pub struct Parser<'compiler, 'source> {
+    compiler: &'compiler mut Compiler<'source>,
     source: &'source str,
     indent: u32,
     indents_to_output: i32,
-    is_start_of_file: bool,
+    position: usize,
 
     /// This is set once we have reached the end of the source and have emitted all necessary
     /// `Token::Dedent`s.
@@ -113,37 +115,49 @@ pub struct Parser<'source> {
 
     /// If this is zero, indents/dedents will *not* be ignored; otherwise, they will be.
     ignore_dents: u32,
+
+    /// The result of the last call to `peek_token`.  If this is not `None`, `parse_token` will
+    /// return this value and reset it to `None`.
+    peeked_token: Option<Token<'source>>,
+
+    /// The position of the beginning of the last token parsed, not including whitespace.  Used for
+    /// spans.
+    ///
+    /// Note: this is set by `peek_token` as well as `parse_token`.
+    token_low: usize,
 }
 
 pub type Result<'source, T> = std::result::Result<T, Error<'source>>;
 
-impl<'source> Parser<'source> {
-    pub fn from_source(source: &'source str) -> Self {
+impl<'source, 'compiler> Parser<'compiler, 'source> {
+    pub fn from_source(compiler: &'compiler mut Compiler<'source>, source: &'source str) -> Self {
         Self {
+            compiler,
             source,
             indent: 0,
             indents_to_output: 0,
-            is_start_of_file: true,
+            position: 0,
             is_end_of_file: false,
             ignore_dents: 0,
+            peeked_token: None,
+            token_low: 0,
         }
     }
 
     fn advance(&mut self) -> Option<char> {
-        self.is_start_of_file = false;
-        self.source.chars().next().map(|c| {
-            self.source = &self.source[c.len_utf8()..];
+        self.source[self.position..].chars().next().map(|c| {
+            self.position += c.len_utf8();
             c
         })
     }
 
     fn peek(&self) -> Option<char> {
-        self.source.chars().next()
+        self.source[self.position..].chars().next()
     }
 
     fn skip_whitespace(&mut self) -> i32 {
         let mut new_indent = 0;
-        let mut measure_indents = self.is_start_of_file;
+        let mut measure_indents = self.position == 0;
         let mut check_indent = measure_indents;
 
         while let Some(c) = self.peek().filter(|&x| x.is_whitespace()) {
@@ -164,7 +178,7 @@ impl<'source> Parser<'source> {
             self.advance();
         }
 
-        if self.source.len() == 0 && !self.is_end_of_file {
+        if self.source[self.position..].len() == 0 && !self.is_end_of_file {
             self.is_end_of_file = true;
             return -(self.indent as i32)
         }
@@ -185,11 +199,17 @@ impl<'source> Parser<'source> {
     }
 
     pub fn parse_token(&mut self) -> Result<'source, Token<'source>> {
+        if let Some(token) = self.peeked_token.take() {
+            return Ok(token)
+        }
+
         if self.ignore_dents > 0 {
             self.skip_whitespace();
         } else if self.indents_to_output == 0 {
             self.indents_to_output = self.skip_whitespace();
         }
+
+        self.token_low = self.position;
 
         if self.indents_to_output > 0 {
             self.indents_to_output -= 1;
@@ -199,7 +219,7 @@ impl<'source> Parser<'source> {
             return Ok(Token::Dedent)
         }
 
-        let old_source = self.source;
+        let old_position = self.position;
         match self.advance() {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
@@ -224,7 +244,7 @@ impl<'source> Parser<'source> {
                         break;
                     }
                 }
-                Ok(Token::UppercaseIdentifier(&old_source[0..byte_len]))
+                Ok(Token::UppercaseIdentifier(&self.source[old_position..old_position + byte_len]))
             },
             Some(c @ 'a'...'z') => {
                 let mut byte_len = c.len_utf8();
@@ -236,7 +256,7 @@ impl<'source> Parser<'source> {
                         break;
                     }
                 }
-                let identifier = &old_source[0..byte_len];
+                let identifier = &self.source[old_position..old_position + byte_len];
                 match identifier {
                     "var" => Ok(Token::Var),
                     "return" => Ok(Token::Return),
@@ -253,9 +273,10 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn peek_token(&self) -> Result<'source, Token<'source>> {
-        let mut other = self.clone();
-        other.parse_token()
+    fn peek_token(&mut self) -> Result<'source, Token<'source>> {
+        let token = self.parse_token()?;
+        self.peeked_token = Some(token.clone());
+        Ok(token)
     }
 
     fn expect(&mut self, expected: &Token<'source>) -> Result<'source, ()> {
@@ -274,21 +295,24 @@ impl<'source> Parser<'source> {
         }
     }
 
-    fn parse_expression(&mut self) -> Result<'source, Expression<'source>> {
-        match self.parse_token()? {
-            Token::Integer(i) => Ok(Expression::Integer(i)),
-            Token::LowercaseIdentifier(s) => Ok(Expression::Variable(s)),
+    fn parse_expression(&mut self) -> Result<'source, Box<Expression<'source>>> {
+        let token = self.parse_token()?;
+        let low = self.token_low;
+
+        let expression = match token {
+            Token::Integer(i) => Expression::Integer(i),
+            Token::LowercaseIdentifier(s) => Expression::Variable(s),
             Token::LeftParenthesis => {
                 self.ignore_dents += 1;
                 let mut function_ident = vec![];
                 let mut args = vec![];
                 loop {
-                    let token = self.peek_token()?;
-                    match token {
+                    let token2 = self.peek_token()?;
+                    match token2 {
                         Token::RightParenthesis => {
                             let _ = self.parse_token();
                             self.ignore_dents -= 1;
-                            break Ok(Expression::Call(function_ident.into(), args))
+                            break Expression::Call(function_ident.into(), args)
                         },
                         Token::UppercaseIdentifier(s) => {
                             let _ = self.parse_token();
@@ -305,19 +329,27 @@ impl<'source> Parser<'source> {
                 let variable_name = self.parse_lowercase_identifier()?;
                 self.expect(&Token::Equals)?;
                 let value = self.parse_expression()?;
-                Ok(Expression::Assignment(variable_name, Box::new(value)))
+                Expression::Assignment(variable_name, value)
             },
-            t => Err(Error::UnexpectedToken(t)),
-        }
+            t => return Err(Error::UnexpectedToken(t)),
+        };
+
+        let expression_box = Box::new(expression);
+        self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+
+        Ok(expression_box)
     }
 
-    fn parse_statement(&mut self) -> Result<'source, Statement<'source>> {
-        match self.peek_token()? {
+    fn parse_statement(&mut self) -> Result<'source, Box<Statement<'source>>> {
+        let token = self.peek_token()?;
+        let low = self.token_low;
+
+        let statement = match token {
             Token::Return => {
                 let _ = self.parse_token();
-                Ok(Statement::Return(self.parse_expression()?))
+                Statement::Return(self.parse_expression()?)
             },
-            token @ Token::If | token @ Token::While => {
+            Token::If | Token::While => {
                 let _ = self.parse_token();
                 let condition = self.parse_expression()?;
                 let then = self.parse_block()?;
@@ -329,22 +361,28 @@ impl<'source> Parser<'source> {
                 } else {
                     els = Box::new([]);
                 }
-                Ok(match token {
+
+                (match token {
                     Token::If => Statement::If,
                     Token::While => Statement::While,
                     _ => unreachable!(),
-                }(condition, then, els))
+                })(condition, then, els)
             },
             Token::Break => {
                 let _ = self.parse_token();
-                Ok(Statement::Break)
+                Statement::Break
             },
             Token::Continue => {
                 let _ = self.parse_token();
-                Ok(Statement::Continue)
+                Statement::Continue
             },
-            _ => Ok(Statement::Expression(self.parse_expression()?)),
-        }
+            _ => Statement::Expression(self.parse_expression()?),
+        };
+
+        let boxed_statement = Box::new(statement);
+        self.compiler.statement_spans.insert(&*boxed_statement, &self.source[low..self.position]);
+
+        Ok(boxed_statement)
     }
 
     /// Parse a block, including its opening `Indent` and closing `Dedent` tokens.
@@ -372,10 +410,19 @@ impl<'source> Parser<'source> {
         Ok(statements.into())
     }
 
-    pub fn parse_definition(&mut self) -> Result<'source, Definition<'source>> {
+    pub fn parse_definition(&mut self) -> Result<'source, Box<Definition<'source>>> {
+        let _ = self.peek_token()?; // set token_low
+        let low = self.token_low;
+
         let signature = self.parse_function_signature()?;
+        let span = &self.source[low..self.position];
         let body = self.parse_block()?;
-        Ok(Definition::Function(signature, body))
+
+        let definition_boxed = Box::new(Definition::Function(signature, body));
+
+        self.compiler.definition_spans.insert(&*definition_boxed, span);
+
+        Ok(definition_boxed)
     }
 
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {

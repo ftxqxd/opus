@@ -5,7 +5,8 @@ use crate::compile::Compiler;
 use crate::backend::c;
 
 pub fn compile_source<W: Write>(src: &str, output: &mut W) {
-    let mut parser = Parser::from_source(src);
+    let mut compiler = Compiler::new();
+    let mut parser = Parser::from_source(&mut compiler, src);
 
     let mut definitions = vec![];
 
@@ -19,15 +20,17 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
         }
     }
 
-    let mut compiler = Compiler::new();
     for definition in &definitions {
         compiler.parse_definition(definition);
     }
 
     let mut translate = true;
     c::initialize(&compiler, output).unwrap();
-    for &Definition::Function(ref sig, ref block) in &definitions {
-        let ir_generator = IrGenerator::from_function(&compiler, sig, block);
+    for definition in &definitions {
+        let Definition::Function(ref sig, ref block) = **definition;
+
+        let span = compiler.definition_spans[&(&**definition as *const _)];
+        let ir_generator = IrGenerator::from_function(&compiler, sig, block, span);
 
         //println!("{}", ir_generator);
         if compiler.has_errors.get() {

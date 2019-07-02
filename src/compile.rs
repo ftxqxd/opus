@@ -1,12 +1,16 @@
 use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
-use crate::parse::{FunctionName, Definition, Expression};
+use crate::parse::{FunctionName, Definition, Expression, Statement};
 
 #[derive(Debug)]
 pub struct Compiler<'source> {
     pub resolution_map: HashMap<&'source FunctionName<'source>, Function>,
     pub has_errors: Cell<bool>,
+
+    pub expression_spans: HashMap<*const Expression<'source>, &'source str>,
+    pub statement_spans: HashMap<*const Statement<'source>, &'source str>,
+    pub definition_spans: HashMap<*const Definition<'source>, &'source str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,11 +60,11 @@ impl fmt::Display for Function {
 #[derive(Debug)]
 pub enum Error<'source> {
     UndefinedVariable(&'source str),
-    UndefinedFunction(&'source FunctionName<'source>),
-    UnexpectedType { expected: Type, found: Type },
-    FunctionMightNotReturn,
-    BreakOutsideLoop,
-    ContinueOutsideLoop,
+    UndefinedFunction(&'source str, &'source FunctionName<'source>),
+    UnexpectedType { span: &'source str, expected: Type, found: Type },
+    FunctionMightNotReturn(&'source str),
+    BreakOutsideLoop(&'source str),
+    ContinueOutsideLoop(&'source str),
 }
 
 impl Type {
@@ -85,6 +89,9 @@ impl<'source> Compiler<'source> {
         Self {
             resolution_map,
             has_errors: Cell::new(false),
+            expression_spans: HashMap::new(),
+            statement_spans: HashMap::new(),
+            definition_spans: HashMap::new(),
         }
     }
 
@@ -114,5 +121,13 @@ impl<'source> Compiler<'source> {
                 self.resolution_map.insert(&signature.name, function);
             },
         }
+    }
+
+    pub fn statement_span(&self, statement: &Statement<'source>) -> &'source str {
+        self.statement_spans[&(statement as *const _)]
+    }
+
+    pub fn expression_span(&self, expression: &Expression<'source>) -> &'source str {
+        self.expression_spans[&(expression as *const _)]
     }
 }

@@ -32,6 +32,9 @@ pub struct IrGenerator<'source> {
     pub signature: &'source FunctionSignature<'source>,
     pub function: &'source Function,
 
+    /// The span of this function's definition.
+    span: &'source str,
+
     /// A list of instructions which represent `break` statements, to be replaced with real `Jump`
     /// instructions once their containing loop has been generated.
     break_instructions_to_insert: Vec<usize>,
@@ -41,13 +44,14 @@ pub struct IrGenerator<'source> {
 }
 
 impl<'source> IrGenerator<'source> {
-    pub fn from_function(compiler: &'source Compiler<'source>, signature: &'source FunctionSignature<'source>, block: &'source Block<'source>) -> Self {
+    pub fn from_function(compiler: &'source Compiler<'source>, signature: &'source FunctionSignature<'source>, block: &'source Block<'source>, span: &'source str) -> Self {
         let mut this = Self {
             compiler,
             locals: HashMap::new(),
             variables: vec![],
             instructions: vec![],
             signature,
+            span,
             function: &compiler.resolution_map[&*signature.name],
             break_instructions_to_insert: vec![],
             innermost_loop_begin: None,
@@ -76,12 +80,10 @@ impl<'source> IrGenerator<'source> {
 
         let diverges = self.generate_ir_from_block(block);
         if !diverges {
-            self.compiler.report_error(Error::FunctionMightNotReturn);
+            self.compiler.report_error(Error::FunctionMightNotReturn(self.span));
         }
 
-        for _ in &self.break_instructions_to_insert {
-            self.compiler.report_error(Error::BreakOutsideLoop);
-        }
+        debug_assert_eq!(self.break_instructions_to_insert.len(), 0);
 
         // Push a nop to the end of instructions in case the function ends with a branch
         self.instructions.push(Instruction::Nop);
@@ -114,7 +116,8 @@ impl<'source> IrGenerator<'source> {
                 let expected_type = &self.function.return_type;
                 let found_type = &self.variables[return_variable].typ;
                 if !expected_type.can_unify_with(found_type) {
-                    self.compiler.report_error(Error::UnexpectedType { expected: expected_type.clone(), found: found_type.clone() });
+                    let span = self.compiler.expression_span(&*expression);
+                    self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type.clone(), found: found_type.clone() });
                     let error = self.generate_error();
                     self.instructions.push(Instruction::Return(error));
                 } else {
@@ -180,14 +183,20 @@ impl<'source> IrGenerator<'source> {
                 return diverges
             },
             Statement::Break => {
-                self.break_instructions_to_insert.push(self.instructions.len());
-                self.instructions.push(Instruction::BreakPlaceholder);
+                if let Some(_) = self.innermost_loop_begin {
+                    self.break_instructions_to_insert.push(self.instructions.len());
+                    self.instructions.push(Instruction::BreakPlaceholder);
+                } else {
+                    let span = self.compiler.statement_span(statement);
+                    self.compiler.report_error(Error::BreakOutsideLoop(span));
+                }
             },
             Statement::Continue => {
                 if let Some(index) = self.innermost_loop_begin {
                     self.instructions.push(Instruction::Jump(index));
                 } else {
-                    self.compiler.report_error(Error::ContinueOutsideLoop);
+                    let span = self.compiler.statement_span(statement);
+                    self.compiler.report_error(Error::ContinueOutsideLoop(span));
                 }
             },
         }
@@ -217,11 +226,12 @@ impl<'source> IrGenerator<'source> {
                     debug_assert_eq!(function.arguments.len(), arguments.len());
 
                     let mut had_error = false;
-                    for (expected_type, found_variable) in function.arguments.iter().zip(argument_variables.iter()) {
+                    for (i, (expected_type, found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
                         let found_type = &self.variables[*found_variable].typ;
                         if !expected_type.can_unify_with(found_type) {
                             had_error = true;
-                            self.compiler.report_error(Error::UnexpectedType { expected: expected_type.clone(), found: found_type.clone() });
+                            let span = self.compiler.expression_span(&*arguments[i]);
+                            self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type.clone(), found: found_type.clone() });
                         }
                     }
                     if had_error {
@@ -232,7 +242,8 @@ impl<'source> IrGenerator<'source> {
                     self.instructions.push(Instruction::Call(variable, function, argument_variables.into()));
                     variable
                 } else {
-                    self.compiler.report_error(Error::UndefinedFunction(name));
+                    let span = self.compiler.expression_span(expression);
+                    self.compiler.report_error(Error::UndefinedFunction(span, name));
                     self.generate_error()
                 }
             },
