@@ -240,7 +240,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some(c @ 'A'...'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() || c == '\'' {
+                    if c.is_alphanumeric() || c == '\'' || c == '_' {
                         byte_len += c.len_utf8();
                         self.advance();
                     } else {
@@ -249,10 +249,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 }
                 Ok(Token::UppercaseIdentifier(&self.source[old_position..old_position + byte_len]))
             },
-            Some(c @ 'a'...'z') => {
+            Some(c @ 'a'...'z') | Some(c @ '_') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() || c == '\'' {
+                    if c.is_alphanumeric() || c == '\'' || c == '_' {
                         byte_len += c.len_utf8();
                         self.advance();
                     } else {
