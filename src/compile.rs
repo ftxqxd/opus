@@ -26,6 +26,7 @@ pub struct Function {
     pub name: Box<[Option<Box<str>>]>,
     pub arguments: Box<[Type]>,
     pub return_type: Type,
+    pub is_extern: bool,
 }
 
 impl fmt::Display for Function {
@@ -84,6 +85,7 @@ impl<'source> Compiler<'source> {
             name: Box::new([Some("Print".into()), None]),
             arguments: Box::new([Type::Integer64]),
             return_type: Type::Null,
+            is_extern: false,
         };
         resolution_map.insert(&PRINT_NAME, print_function);
         Self {
@@ -110,13 +112,19 @@ impl<'source> Compiler<'source> {
     }
 
     pub fn parse_definition(&mut self, definition: &'source Definition<'source>) {
-        match definition {
-            Definition::Function(ref signature, ..) => {
+        match *definition {
+            Definition::Function(ref signature, ..) | Definition::Extern(ref signature) => {
                 let name = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
                 let arguments = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
                 let return_type = self.resolve_type(&signature.return_type);
 
-                let function = Function { name, arguments, return_type };
+                let is_extern = if let Definition::Extern(..) = *definition {
+                    true
+                } else {
+                    false
+                };
+
+                let function = Function { name, arguments, return_type, is_extern };
 
                 self.resolution_map.insert(&signature.name, function);
             },

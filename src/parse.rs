@@ -19,6 +19,7 @@ pub enum Token<'source> {
     While,
     Break,
     Continue,
+    Extern,
 }
 
 #[derive(Debug)]
@@ -44,6 +45,7 @@ pub type Block<'source> = [Box<Statement<'source>>];
 #[derive(Debug)]
 pub enum Definition<'source> {
     Function(FunctionSignature<'source>, Box<Block<'source>>),
+    Extern(FunctionSignature<'source>),
 }
 
 /// The name of a function; e.g., `Foo _ _ Bar _`.
@@ -99,6 +101,7 @@ pub enum Error<'source> {
     UnexpectedToken(Token<'source>),
     ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
     ExpectedLowercaseIdentifier(Token<'source>),
+    InvalidExternFunctionName(FunctionSignature<'source>),
 }
 
 #[derive(Debug)]
@@ -234,10 +237,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 }
                 Ok(Token::Integer(i))
             },
-            Some(c @ 'A'...'Z') => {
+            Some(c @ 'A'...'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() {
+                    if c.is_alphanumeric() || c == '\'' {
                         byte_len += c.len_utf8();
                         self.advance();
                     } else {
@@ -249,7 +252,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some(c @ 'a'...'z') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() {
+                    if c.is_alphanumeric() || c == '\'' {
                         byte_len += c.len_utf8();
                         self.advance();
                     } else {
@@ -265,6 +268,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "while" => Ok(Token::While),
                     "break" => Ok(Token::Break),
                     "continue" => Ok(Token::Continue),
+                    "extern" => Ok(Token::Extern),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -411,14 +415,35 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     }
 
     pub fn parse_definition(&mut self) -> Result<'source, Box<Definition<'source>>> {
-        let _ = self.peek_token()?; // set token_low
+        let token = self.peek_token()?;
         let low = self.token_low;
+        let span;
 
-        let signature = self.parse_function_signature()?;
-        let span = &self.source[low..self.position];
-        let body = self.parse_block()?;
+        let definition = match token {
+            Token::Extern => {
+                let _ = self.parse_token();
+                let signature = self.parse_function_signature()?;
+                span = &self.source[low..self.position];
 
-        let definition_boxed = Box::new(Definition::Function(signature, body));
+                if signature.name.len() == 0
+                || !signature.name[1..].iter().all(|x| x.is_none())
+                || signature.name[0].is_none()
+                || signature.name[0].as_ref().unwrap().chars().next() != Some('\'') {
+                    return Err(Error::InvalidExternFunctionName(signature))
+                }
+
+                Definition::Extern(signature)
+            },
+            _ => {
+                let signature = self.parse_function_signature()?;
+                span = &self.source[low..self.position];
+                let body = self.parse_block()?;
+
+                Definition::Function(signature, body)
+            },
+        };
+
+        let definition_boxed = Box::new(definition);
 
         self.compiler.definition_spans.insert(&*definition_boxed, span);
 

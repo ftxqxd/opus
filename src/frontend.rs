@@ -27,18 +27,18 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
     let mut translate = true;
     c::initialize(&compiler, output).unwrap();
     for definition in &definitions {
-        let Definition::Function(ref sig, ref block) = **definition;
+        if let Definition::Function(ref sig, ref block) = **definition {
+            let span = compiler.definition_spans[&(&**definition as *const _)];
+            let ir_generator = IrGenerator::from_function(&compiler, sig, block, span);
 
-        let span = compiler.definition_spans[&(&**definition as *const _)];
-        let ir_generator = IrGenerator::from_function(&compiler, sig, block, span);
+            //println!("{}", ir_generator);
+            if compiler.has_errors.get() {
+                translate = false;
+            }
 
-        //println!("{}", ir_generator);
-        if compiler.has_errors.get() {
-            translate = false;
-        }
-
-        if translate {
-            c::translate_ir_to_c(&ir_generator, output).unwrap();
+            if translate {
+                c::translate_ir_to_c(&ir_generator, output).unwrap();
+            }
         }
     }
 
