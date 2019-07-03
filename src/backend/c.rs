@@ -111,6 +111,12 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
             }
             writeln!(output, ");")?;
         },
+
+        Instruction::Add(destination, left, right) => writeln!(output, "var{} = var{} + var{};", destination, left, right)?,
+        Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
+        Instruction::Multiply(destination, left, right) => writeln!(output, "var{} = var{} * var{};", destination, left, right)?,
+        Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
+
         Instruction::Return(variable) => writeln!(output, "return var{};", variable)?,
         Instruction::Jump(index) => {
             writeln!(output, "goto i{};", index)?;
@@ -118,6 +124,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Branch(condition_variable, if_index, then_index) => {
             writeln!(output, "if (var{}) goto i{}; else goto i{};", condition_variable, if_index, then_index)?;
         },
+
         Instruction::Nop => writeln!(output, ";")?,
         Instruction::BreakPlaceholder => panic!("break placeholder left unfilled"),
         Instruction::Error(variable) => panic!("error in var{} went unreported", variable),

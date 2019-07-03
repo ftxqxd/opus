@@ -1,16 +1,23 @@
 use std::mem;
 use std::fmt;
 use std::collections::HashMap;
-use crate::parse::{Expression, Statement, FunctionSignature, Block};
+use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator};
 use crate::compile::{Type, Compiler, Error, Function};
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
     ConstantInteger(VariableId, u64),
     Call(VariableId, &'source Function, Box<[VariableId]>),
+
+    Add(VariableId, VariableId, VariableId),
+    Subtract(VariableId, VariableId, VariableId),
+    Multiply(VariableId, VariableId, VariableId),
+    Divide(VariableId, VariableId, VariableId),
+
     Return(VariableId),
     Jump(usize),
     Branch(VariableId, usize, usize),
+
     Nop,
     BreakPlaceholder,
     Error(VariableId),
@@ -205,6 +212,8 @@ impl<'source> IrGenerator<'source> {
     }
 
     fn generate_ir_from_expression(&mut self, expression: &'source Expression<'source>) -> VariableId {
+        let expression_span = self.compiler.expression_span(expression);
+
         match *expression {
             Expression::Integer(i) => {
                 let variable = self.new_variable(Variable { typ: Type::Integer64 });
@@ -242,8 +251,7 @@ impl<'source> IrGenerator<'source> {
                     self.instructions.push(Instruction::Call(variable, function, argument_variables.into()));
                     variable
                 } else {
-                    let span = self.compiler.expression_span(expression);
-                    self.compiler.report_error(Error::UndefinedFunction(span, name));
+                    self.compiler.report_error(Error::UndefinedFunction(expression_span, name));
                     self.generate_error()
                 }
             },
@@ -251,6 +259,38 @@ impl<'source> IrGenerator<'source> {
                 let variable = self.generate_ir_from_expression(value);
                 self.locals.insert(name, variable);
                 variable
+            },
+            Expression::BinaryOperator(operator, ref left, ref right) => {
+                let left_variable = self.generate_ir_from_expression(left);
+                let right_variable = self.generate_ir_from_expression(right);
+
+                let output_type = match (&self.variables[left_variable].typ, &self.variables[right_variable].typ) {
+                    (&Type::Integer64, &Type::Integer64) => {
+                        Type::Integer64
+                    },
+                    (&Type::Natural64, &Type::Natural64) => {
+                        Type::Natural64
+                    },
+                    (ref type1, ref type2) => {
+                        self.compiler.report_error(Error::InvalidOperandTypes {
+                            span: expression_span,
+                            left: (*type1).clone(),
+                            right: (*type2).clone(),
+                        });
+                        return self.generate_error()
+                    },
+                };
+
+                let operation = match operator {
+                    BinaryOperator::Plus => Instruction::Add,
+                    BinaryOperator::Minus => Instruction::Subtract,
+                    BinaryOperator::Times => Instruction::Multiply,
+                    BinaryOperator::Divide => Instruction::Divide,
+                };
+                let output_variable = self.new_variable(Variable { typ: output_type });
+                self.instructions.push(operation(output_variable, left_variable, right_variable));
+
+                output_variable
             },
         }
     }
@@ -281,9 +321,16 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                         write!(f, ", {}", argument)?;
                     }
                 },
+
+                Instruction::Add(variable1, variable2, variable3) => write!(f, "%{} = add %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
+
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
                 Instruction::Jump(index) => write!(f, "jump @{:<03}", index)?,
                 Instruction::Branch(variable, index1, index2) => write!(f, "branch %{}, @{:<03}, @{:<03}", variable, index1, index2)?,
+
                 Instruction::Nop => write!(f, "nop")?,
                 Instruction::BreakPlaceholder => write!(f, "<break placeholder>")?,
                 Instruction::Error(destination) => write!(f, "%{} = error", destination)?,

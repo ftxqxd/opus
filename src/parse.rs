@@ -1,5 +1,6 @@
-use crate::compile::Compiler;
 use std::fmt;
+use std::mem;
+use crate::compile::Compiler;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token<'source> {
@@ -7,6 +8,10 @@ pub enum Token<'source> {
     RightParenthesis,
     Colon,
     Equals,
+    Plus,
+    Minus,
+    Asterisk,
+    Slash,
     Integer(u64),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
@@ -22,12 +27,42 @@ pub enum Token<'source> {
     Extern,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum BinaryOperator {
+    Plus,
+    Minus,
+    Times,
+    Divide,
+}
+
+impl BinaryOperator {
+    fn from_token<'source>(token: &Token<'source>) -> Option<BinaryOperator> {
+        match *token {
+            Token::Plus => Some(BinaryOperator::Plus),
+            Token::Minus => Some(BinaryOperator::Minus),
+            Token::Asterisk => Some(BinaryOperator::Times),
+            Token::Slash => Some(BinaryOperator::Divide),
+            _ => None,
+        }
+    }
+
+    fn precedence(&self) -> Precedence {
+        match *self {
+            BinaryOperator::Plus => 10,
+            BinaryOperator::Minus => 10,
+            BinaryOperator::Times => 11,
+            BinaryOperator::Divide => 11,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Expression<'source> {
     Integer(u64),
     Variable(&'source str),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Assignment(&'source str, Box<Expression<'source>>),
+    BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
 }
 
 #[derive(Debug)]
@@ -104,13 +139,15 @@ pub enum Error<'source> {
     InvalidExternFunctionName(FunctionSignature<'source>),
 }
 
+type Precedence = i8;
+
 #[derive(Debug)]
 pub struct Parser<'compiler, 'source> {
     compiler: &'compiler mut Compiler<'source>,
     source: &'source str,
     indent: u32,
     indents_to_output: i32,
-    position: usize,
+    real_position: usize,
 
     /// This is set once we have reached the end of the source and have emitted all necessary
     /// `Token::Dedent`s.
@@ -122,6 +159,10 @@ pub struct Parser<'compiler, 'source> {
     /// The result of the last call to `peek_token`.  If this is not `None`, `parse_token` will
     /// return this value and reset it to `None`.
     peeked_token: Option<Token<'source>>,
+
+    /// Like `real_position`, but this value is not updated by calls to `peek_token`, instead
+    /// retaining the old value until `parse_token` is called.
+    position: usize,
 
     /// The position of the beginning of the last token parsed, not including whitespace.  Used for
     /// spans.
@@ -139,28 +180,30 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             source,
             indent: 0,
             indents_to_output: 0,
-            position: 0,
+            real_position: 0,
             is_end_of_file: false,
             ignore_dents: 0,
             peeked_token: None,
+            position: 0,
             token_low: 0,
         }
     }
 
     fn advance(&mut self) -> Option<char> {
-        self.source[self.position..].chars().next().map(|c| {
-            self.position += c.len_utf8();
+        self.source[self.real_position..].chars().next().map(|c| {
+            self.real_position += c.len_utf8();
+            self.position = self.real_position;
             c
         })
     }
 
     fn peek(&self) -> Option<char> {
-        self.source[self.position..].chars().next()
+        self.source[self.real_position..].chars().next()
     }
 
     fn skip_whitespace(&mut self) -> i32 {
         let mut new_indent = 0;
-        let mut measure_indents = self.position == 0;
+        let mut measure_indents = self.real_position == 0;
         let mut check_indent = measure_indents;
 
         while let Some(c) = self.peek().filter(|&x| x.is_whitespace()) {
@@ -181,7 +224,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             self.advance();
         }
 
-        if self.source[self.position..].len() == 0 && !self.is_end_of_file {
+        if self.source[self.real_position..].len() == 0 && !self.is_end_of_file {
             self.is_end_of_file = true;
             return -(self.indent as i32)
         }
@@ -203,6 +246,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
     pub fn parse_token(&mut self) -> Result<'source, Token<'source>> {
         if let Some(token) = self.peeked_token.take() {
+            self.position = self.real_position;
             return Ok(token)
         }
 
@@ -228,6 +272,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some(')') => Ok(Token::RightParenthesis),
             Some(':') => Ok(Token::Colon),
             Some('=') => Ok(Token::Equals),
+            Some('+') => Ok(Token::Plus),
+            Some('-') => Ok(Token::Minus),
+            Some('*') => Ok(Token::Asterisk),
+            Some('/') => Ok(Token::Slash),
             Some(c @ '0'...'9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'...'9') = self.peek() {
@@ -278,8 +326,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     }
 
     fn peek_token(&mut self) -> Result<'source, Token<'source>> {
+        let old_position = self.position;
         let token = self.parse_token()?;
         self.peeked_token = Some(token.clone());
+        self.position = old_position;
         Ok(token)
     }
 
@@ -299,7 +349,74 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         }
     }
 
+    /// Return the position of the beginning of the given span string in this `Parser`'s source string.
+    fn string_low(&self, span: &'source str) -> usize {
+        let position = span as *const str as *const u8 as usize - self.source as *const str as *const u8 as usize;
+        debug_assert!(position <= self.source.len());
+        position
+    }
+
+    /// Return the position of the end of the given span string in this `Parser`'s source string.
+    fn string_high(&self, span: &'source str) -> usize {
+        span.len() + self.string_low(span)
+    }
+
     fn parse_expression(&mut self) -> Result<'source, Box<Expression<'source>>> {
+        let left = self.parse_atom()?;
+        let operator_token = self.peek_token()?;
+        if let Some(operator) = BinaryOperator::from_token(&operator_token) {
+            let _ = self.parse_token()?;
+            let right = self.parse_expression()?;
+
+            let left_span = self.compiler.expression_span(&left);
+            let low = self.string_low(left_span);
+
+            let mut boxed_expression = Box::new(Expression::BinaryOperator(operator, left, right));
+            self.correct_precedence(&mut *boxed_expression);
+
+            self.compiler.expression_spans.insert(&*boxed_expression, &self.source[low..self.position]);
+
+            Ok(boxed_expression)
+        } else {
+            Ok(left)
+        }
+    }
+
+    fn correct_precedence(&mut self, expression: &mut Expression<'source>) {
+        if let Expression::BinaryOperator(ref mut operator, ref mut left, ref mut right) = *expression {
+            if let Expression::BinaryOperator(ref mut operator2, ref mut right_left, ref mut right_right) = **right {
+                if operator.precedence() >= operator2.precedence() {
+                    // These operators are out of order; swap them around!
+                    //
+                    // The process looks something like this:
+                    //
+                    //     *               +
+                    //    / \             / \
+                    //   a   +     =>    *   c
+                    //      / \         / \
+                    //     b   c       a   b
+
+                    // First, gather some info about spans
+                    let left_span = self.compiler.expression_span(&**left);
+                    let low = self.string_low(left_span);
+                    let right_left_span = self.compiler.expression_span(&**right_left);
+                    let high = self.string_high(right_left_span);
+
+                    // Do the swap!
+                    mem::swap(operator, operator2);
+                    mem::swap::<Box<_>>(left, right_left);
+                    mem::swap::<Box<_>>(left, right_right);
+                    mem::swap::<Box<_>>(left, right);
+                    self.correct_precedence(left);
+
+                    // Now correct the now-left sub-expression's span
+                    self.compiler.expression_spans.insert(&**left, &self.source[low..high]);
+                }
+            }
+        }
+    }
+
+    fn parse_atom(&mut self) -> Result<'source, Box<Expression<'source>>> {
         let token = self.parse_token()?;
         let low = self.token_low;
 

@@ -63,6 +63,7 @@ pub enum Error<'source> {
     UndefinedVariable(&'source str),
     UndefinedFunction(&'source str, &'source FunctionName<'source>),
     UnexpectedType { span: &'source str, expected: Type, found: Type },
+    InvalidOperandTypes { span: &'source str, left: Type, right: Type },
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
