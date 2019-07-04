@@ -14,6 +14,9 @@ pub enum Instruction<'source> {
     Multiply(VariableId, VariableId, VariableId),
     Divide(VariableId, VariableId, VariableId),
 
+    Reference(VariableId, VariableId),
+    Dereference(VariableId, VariableId),
+
     Return(VariableId),
     Jump(usize),
     Branch(VariableId, usize, usize),
@@ -292,6 +295,32 @@ impl<'source> IrGenerator<'source> {
 
                 output_variable
             },
+            Expression::Reference(ref subexpression) => {
+                let index = self.generate_ir_from_expression(subexpression);
+                let variable = &self.variables[index];
+                let output_variable = Variable { typ: Type::Pointer(Box::new(variable.typ.clone())) };
+                let output_index = self.new_variable(output_variable);
+
+                self.instructions.push(Instruction::Reference(output_index, index));
+
+                output_index
+            },
+            Expression::Dereference(ref subexpression) => {
+                let index = self.generate_ir_from_expression(subexpression);
+                let variable = &self.variables[index];
+
+                if let Type::Pointer(ref subtype) = variable.typ {
+                    let output_variable = Variable { typ: (**subtype).clone() };
+                    let output_index = self.new_variable(output_variable);
+
+                    self.instructions.push(Instruction::Dereference(output_index, index));
+
+                    output_index
+                } else {
+                    self.compiler.report_error(Error::InvalidOperandType { span: expression_span, typ: variable.typ.clone() });
+                    self.generate_error()
+                }
+            },
         }
     }
 }
@@ -326,6 +355,9 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
+
+                Instruction::Reference(variable1, variable2) => write!(f, "%{} = reference %{}", variable1, variable2)?,
+                Instruction::Dereference(variable1, variable2) => write!(f, "%{} = dereference %{}", variable1, variable2)?,
 
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
                 Instruction::Jump(index) => write!(f, "jump @{:<03}", index)?,

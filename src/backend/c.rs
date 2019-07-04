@@ -85,11 +85,16 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
     write!(output, ")")
 }
 
-fn translate_type_to_c<W: Write>(_compiler: &Compiler, output: &mut W, typ: &Type) -> io::Result<()> {
+fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type) -> io::Result<()> {
     match *typ {
         Type::Integer64 => write!(output, "int64_t"),
         Type::Natural64 => write!(output, "uint64_t"),
         Type::Null => write!(output, "_opust_null"),
+        Type::Pointer(ref subtype) => {
+            write!(output, "const ")?;
+            translate_type_to_c(compiler, output, subtype)?;
+            write!(output, " *")
+        },
         Type::Error => write!(output, "internal_compiler_error"),
     }
 }
@@ -116,6 +121,9 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
         Instruction::Multiply(destination, left, right) => writeln!(output, "var{} = var{} * var{};", destination, left, right)?,
         Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
+
+        Instruction::Reference(destination, value) => writeln!(output, "var{} = &var{};", destination, value)?,
+        Instruction::Dereference(destination, value) => writeln!(output, "var{} = *var{};", destination, value)?,
 
         Instruction::Return(variable) => writeln!(output, "return var{};", variable)?,
         Instruction::Jump(index) => {
@@ -176,6 +184,10 @@ fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
         Type::Integer64 => write!(output, "int64"),
         Type::Natural64 => write!(output, "nat64"),
         Type::Null => write!(output, "null"),
+        Type::Pointer(ref subtype) => {
+            write!(output, "PointerTo")?;
+            mangle_type_name(subtype, output)
+        },
         Type::Error => write!(output, "error"),
     }
 }

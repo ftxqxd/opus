@@ -12,6 +12,8 @@ pub enum Token<'source> {
     Minus,
     Asterisk,
     Slash,
+    Caret,
+    At,
     Integer(u64),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
@@ -25,6 +27,7 @@ pub enum Token<'source> {
     Break,
     Continue,
     Extern,
+    EndOfFile,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -56,13 +59,15 @@ impl BinaryOperator {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Expression<'source> {
     Integer(u64),
     Variable(&'source str),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Assignment(&'source str, Box<Expression<'source>>),
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
+    Reference(Box<Expression<'source>>),
+    Dereference(Box<Expression<'source>>),
 }
 
 #[derive(Debug)]
@@ -90,7 +95,7 @@ pub enum Definition<'source> {
 pub type FunctionName<'source> = [Option<&'source str>];
 
 /// The full signature of a function (including argument names & types).
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
     pub name: Box<FunctionName<'source>>,
@@ -129,10 +134,9 @@ impl<'source> fmt::Display for FunctionSignature<'source> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Error<'source> {
     UnexpectedCharacter(char),
-    UnexpectedEof,
     UnexpectedToken(Token<'source>),
     ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
     ExpectedLowercaseIdentifier(Token<'source>),
@@ -187,6 +191,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             position: 0,
             token_low: 0,
         }
+    }
+
+    pub fn is_at_end_of_file(&mut self) -> bool {
+        self.peek_token() == Ok(Token::EndOfFile)
     }
 
     fn advance(&mut self) -> Option<char> {
@@ -276,6 +284,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('-') => Ok(Token::Minus),
             Some('*') => Ok(Token::Asterisk),
             Some('/') => Ok(Token::Slash),
+            Some('^') => Ok(Token::Caret),
+            Some('@') => Ok(Token::At),
             Some(c @ '0'...'9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'...'9') = self.peek() {
@@ -321,7 +331,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 }
             },
             Some(c) => Err(Error::UnexpectedCharacter(c)),
-            None => Err(Error::UnexpectedEof),
+            None => Ok(Token::EndOfFile),
         }
     }
 
@@ -455,8 +465,24 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             t => return Err(Error::UnexpectedToken(t)),
         };
 
-        let expression_box = Box::new(expression);
+        let mut expression_box = Box::new(expression);
         self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+
+        loop {
+            match self.peek_token()? {
+                Token::Caret => {
+                    let _ = self.parse_token();
+                    expression_box = Box::new(Expression::Reference(expression_box));
+                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                },
+                Token::At => {
+                    let _ = self.parse_token();
+                    expression_box = Box::new(Expression::Dereference(expression_box));
+                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                },
+                _ => break,
+            }
+        }
 
         Ok(expression_box)
     }

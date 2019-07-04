@@ -18,6 +18,7 @@ pub enum Type {
     Integer64,
     Natural64,
     Null,
+    Pointer(Box<Type>),
     Error,
 }
 
@@ -64,6 +65,7 @@ pub enum Error<'source> {
     UndefinedFunction(&'source str, &'source FunctionName<'source>),
     UnexpectedType { span: &'source str, expected: Type, found: Type },
     InvalidOperandTypes { span: &'source str, left: Type, right: Type },
+    InvalidOperandType { span: &'source str, typ: Type },
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
@@ -108,6 +110,7 @@ impl<'source> Compiler<'source> {
             Expression::Variable("int64") => Type::Integer64,
             Expression::Variable("nat64") => Type::Natural64,
             Expression::Variable("null") => Type::Null,
+            Expression::Reference(ref subexpression) => Type::Pointer(Box::new(self.resolve_type(subexpression))),
             _ => Type::Error,
         }
     }

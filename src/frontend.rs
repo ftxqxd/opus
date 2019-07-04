@@ -1,5 +1,5 @@
 use std::io::Write;
-use crate::parse::{Parser, Definition, Error};
+use crate::parse::{Parser, Definition};
 use crate::generate_ir::IrGenerator;
 use crate::compile::Compiler;
 use crate::backend::c;
@@ -10,12 +10,11 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
 
     let mut definitions = vec![];
 
-    loop {
+    while !parser.is_at_end_of_file() {
         match parser.parse_definition() {
             Ok(d) => {
                 definitions.push(d);
             },
-            Err(Error::UnexpectedEof) => break,
             Err(e) => { eprintln!("error: {:?}", e); return },
         }
     }
