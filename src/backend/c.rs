@@ -87,7 +87,13 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
 
 fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type) -> io::Result<()> {
     match *typ {
+        Type::Integer8 => write!(output, "int8_t"),
+        Type::Integer16 => write!(output, "int16_t"),
+        Type::Integer32 => write!(output, "int32_t"),
         Type::Integer64 => write!(output, "int64_t"),
+        Type::Natural8 => write!(output, "uint8_t"),
+        Type::Natural16 => write!(output, "uint16_t"),
+        Type::Natural32 => write!(output, "uint32_t"),
         Type::Natural64 => write!(output, "uint64_t"),
         Type::Null => write!(output, "_opust_null"),
         Type::Pointer(ref subtype) => {
@@ -124,6 +130,13 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
 
         Instruction::Reference(destination, value) => writeln!(output, "var{} = &var{};", destination, value)?,
         Instruction::Dereference(destination, value) => writeln!(output, "var{} = *var{};", destination, value)?,
+
+        Instruction::Cast(destination, source) => {
+            let type1 = &ir.variables[destination].typ;
+            write!(output, "var{} = (", destination)?;
+            translate_type_to_c(&ir.compiler, output, type1)?;
+            writeln!(output, ") var{};", source)?;
+        },
 
         Instruction::Return(variable) => writeln!(output, "return var{};", variable)?,
         Instruction::Jump(index) => {
@@ -181,7 +194,13 @@ fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Re
 
 fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
     match *typ {
+        Type::Integer8 => write!(output, "int8"),
+        Type::Integer16 => write!(output, "int16"),
+        Type::Integer32 => write!(output, "int32"),
         Type::Integer64 => write!(output, "int64"),
+        Type::Natural8 => write!(output, "nat8"),
+        Type::Natural16 => write!(output, "nat16"),
+        Type::Natural32 => write!(output, "nat32"),
         Type::Natural64 => write!(output, "nat64"),
         Type::Null => write!(output, "null"),
         Type::Pointer(ref subtype) => {

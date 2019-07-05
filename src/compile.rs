@@ -15,7 +15,13 @@ pub struct Compiler<'source> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Type {
+    Integer8,
+    Integer16,
+    Integer32,
     Integer64,
+    Natural8,
+    Natural16,
+    Natural32,
     Natural64,
     Null,
     Pointer(Box<Type>),
@@ -72,11 +78,39 @@ pub enum Error<'source> {
 }
 
 impl Type {
-    pub fn can_unify_with(&self, other: &Type) -> bool {
-        if *self == Type::Error || *other == Type::Error {
+    pub fn can_autocast_to(&self, other: &Type) -> bool {
+        if self == other {
             return true
         }
-        self == other
+
+        match (self, other) {
+            // errors
+            (&Type::Error, _)
+            | (_, &Type::Error)
+            // integer upcasts
+            | (&Type::Integer8, &Type::Integer64)
+            | (&Type::Integer16, &Type::Integer64)
+            | (&Type::Integer32, &Type::Integer64)
+            | (&Type::Integer8, &Type::Integer32)
+            | (&Type::Integer16, &Type::Integer32)
+            | (&Type::Integer8, &Type::Integer16)
+            // natural upcasts
+            | (&Type::Natural8, &Type::Natural64)
+            | (&Type::Natural16, &Type::Natural64)
+            | (&Type::Natural32, &Type::Natural64)
+            | (&Type::Natural8, &Type::Natural32)
+            | (&Type::Natural16, &Type::Natural32)
+            | (&Type::Natural8, &Type::Natural16)
+            // natural -> integer upcasts
+            | (&Type::Natural8, &Type::Integer64)
+            | (&Type::Natural16, &Type::Integer64)
+            | (&Type::Natural32, &Type::Integer64)
+            | (&Type::Natural8, &Type::Integer32)
+            | (&Type::Natural16, &Type::Integer32)
+            | (&Type::Natural8, &Type::Integer16)
+              => true,
+            _ => false,
+        }
     }
 }
 
@@ -107,7 +141,13 @@ impl<'source> Compiler<'source> {
 
     pub fn resolve_type(&self, typ: &Expression) -> Type {
         match *typ {
+            Expression::Variable("int8") => Type::Integer8,
+            Expression::Variable("int16") => Type::Integer16,
+            Expression::Variable("int32") => Type::Integer32,
             Expression::Variable("int64") => Type::Integer64,
+            Expression::Variable("nat8") => Type::Natural8,
+            Expression::Variable("nat16") => Type::Natural16,
+            Expression::Variable("nat32") => Type::Natural32,
             Expression::Variable("nat64") => Type::Natural64,
             Expression::Variable("null") => Type::Null,
             Expression::Reference(ref subexpression) => Type::Pointer(Box::new(self.resolve_type(subexpression))),

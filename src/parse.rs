@@ -14,7 +14,7 @@ pub enum Token<'source> {
     Slash,
     Caret,
     At,
-    Integer(u64),
+    Integer(u64, bool, u8),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
     Indent,
@@ -61,7 +61,7 @@ impl BinaryOperator {
 
 #[derive(Debug, PartialEq)]
 pub enum Expression<'source> {
-    Integer(u64),
+    Integer(u64, bool, u8),
     Variable(&'source str),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Assignment(&'source str, Box<Expression<'source>>),
@@ -141,6 +141,7 @@ pub enum Error<'source> {
     ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
     ExpectedLowercaseIdentifier(Token<'source>),
     InvalidExternFunctionName(FunctionSignature<'source>),
+    InvalidNumericSize(u32),
 }
 
 type Precedence = i8;
@@ -293,7 +294,42 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     i *= 10;
                     i += c as u64 - '0' as u64;
                 }
-                Ok(Token::Integer(i))
+                // look for type suffix
+                let mut signed = true;
+                let size = match self.peek() {
+                    Some(c @ 'i') | Some(c @ 'n') => {
+                        signed = c == 'i';
+
+                        self.advance();
+                        let old_position = self.real_position;
+                        match (self.advance(), self.peek()) {
+                            (Some('8'), _) => 8,
+                            (Some('1'), Some('6')) => {
+                                self.advance();
+                                16
+                            },
+                            (Some('3'), Some('2')) => {
+                                self.advance();
+                                32
+                            },
+                            (Some('6'), Some('4')) => {
+                                self.advance();
+                                64
+                            },
+                            (Some(a @ '0'...'9'), Some(b @ '0'...'9')) => {
+                                let size = (a as u32 - '0' as u32) * 10 + b as u32 - '0' as u32;
+                                return Err(Error::InvalidNumericSize(size))
+                            },
+                            (Some(a @ '0'...'9'), _) => {
+                                let size = a as u32 - '0' as u32;
+                                return Err(Error::InvalidNumericSize(size))
+                            },
+                            _ => { self.real_position = old_position; self.position = old_position; 32 },
+                        }
+                    },
+                    _ => 32,
+                };
+                Ok(Token::Integer(i, signed, size))
             },
             Some(c @ 'A'...'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
@@ -431,7 +467,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let low = self.token_low;
 
         let expression = match token {
-            Token::Integer(i) => Expression::Integer(i),
+            Token::Integer(i, signed, size) => {
+                Expression::Integer(i, signed, size)
+            },
             Token::LowercaseIdentifier(s) => Expression::Variable(s),
             Token::LeftParenthesis => {
                 self.ignore_dents += 1;

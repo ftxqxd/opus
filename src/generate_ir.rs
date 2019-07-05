@@ -17,6 +17,8 @@ pub enum Instruction<'source> {
     Reference(VariableId, VariableId),
     Dereference(VariableId, VariableId),
 
+    Cast(VariableId, VariableId),
+
     Return(VariableId),
     Jump(usize),
     Branch(VariableId, usize, usize),
@@ -113,6 +115,27 @@ impl<'source> IrGenerator<'source> {
         diverges
     }
 
+    /// Autocast the given variable to the given type, if necessary.  If no such cast is possible,
+    /// generate an error using the given span.
+    fn autocast_variable_to_type(&mut self, variable: VariableId, expected_type: &Type, span: &'source str) -> VariableId {
+        let found_type = &self.variables[variable].typ;
+
+        if found_type == expected_type {
+            // don't need to do anything
+            variable
+        } else if found_type.can_autocast_to(expected_type) {
+            // do an autocast
+            let return_variable = self.new_variable(Variable { typ: expected_type.clone() });
+            self.instructions.push(Instruction::Cast(return_variable, variable));
+            return_variable
+        } else {
+            // generate an error
+            self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type.clone(), found: found_type.clone() });
+            let error = self.generate_error();
+            error
+        }
+    }
+
     /// Generate IR for a single statement.  Return `true` if the statement is guaranteed to
     /// diverge.
     fn generate_ir_from_statement(&mut self, statement: &'source Statement<'source>) -> bool {
@@ -124,15 +147,9 @@ impl<'source> IrGenerator<'source> {
                 let return_variable = self.generate_ir_from_expression(expression);
 
                 let expected_type = &self.function.return_type;
-                let found_type = &self.variables[return_variable].typ;
-                if !expected_type.can_unify_with(found_type) {
-                    let span = self.compiler.expression_span(&*expression);
-                    self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type.clone(), found: found_type.clone() });
-                    let error = self.generate_error();
-                    self.instructions.push(Instruction::Return(error));
-                } else {
-                    self.instructions.push(Instruction::Return(return_variable));
-                }
+                let span = self.compiler.expression_span(expression);
+                let return_variable = self.autocast_variable_to_type(return_variable, expected_type, span);
+                self.instructions.push(Instruction::Return(return_variable));
                 return true
             },
             Statement::If(ref condition, ref then_block, ref else_block) => {
@@ -218,8 +235,19 @@ impl<'source> IrGenerator<'source> {
         let expression_span = self.compiler.expression_span(expression);
 
         match *expression {
-            Expression::Integer(i) => {
-                let variable = self.new_variable(Variable { typ: Type::Integer64 });
+            Expression::Integer(i, signed, size) => {
+                let typ = match (signed, size) {
+                    (false, 8) => Type::Natural8,
+                    (false, 16) => Type::Natural16,
+                    (false, 32) => Type::Natural32,
+                    (false, 64) => Type::Natural64,
+                    (true, 8) => Type::Integer8,
+                    (true, 16) => Type::Integer16,
+                    (true, 32) => Type::Integer32,
+                    (true, 64) => Type::Integer64,
+                    _ => unreachable!(),
+                };
+                let variable = self.new_variable(Variable { typ });
                 self.instructions.push(Instruction::ConstantInteger(variable, i));
                 variable
             },
@@ -237,17 +265,9 @@ impl<'source> IrGenerator<'source> {
                 if let Some(function) = self.compiler.resolution_map.get(&**name) {
                     debug_assert_eq!(function.arguments.len(), arguments.len());
 
-                    let mut had_error = false;
-                    for (i, (expected_type, found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
-                        let found_type = &self.variables[*found_variable].typ;
-                        if !expected_type.can_unify_with(found_type) {
-                            had_error = true;
-                            let span = self.compiler.expression_span(&*arguments[i]);
-                            self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type.clone(), found: found_type.clone() });
-                        }
-                    }
-                    if had_error {
-                        return self.generate_error()
+                    for (i, (expected_type, &found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
+                        let span = self.compiler.expression_span(&*arguments[i]);
+                        self.autocast_variable_to_type(found_variable, expected_type, span);
                     }
 
                     let variable = self.new_variable(Variable { typ: function.return_type.clone()});
@@ -267,13 +287,18 @@ impl<'source> IrGenerator<'source> {
                 let left_variable = self.generate_ir_from_expression(left);
                 let right_variable = self.generate_ir_from_expression(right);
 
-                let output_type = match (&self.variables[left_variable].typ, &self.variables[right_variable].typ) {
-                    (&Type::Integer64, &Type::Integer64) => {
-                        Type::Integer64
-                    },
-                    (&Type::Natural64, &Type::Natural64) => {
-                        Type::Natural64
-                    },
+                let type1 = &self.variables[left_variable].typ;
+                let type2 = &self.variables[right_variable].typ;
+                let output_type = match (type1, type2) {
+                    (&Type::Integer8, &Type::Integer8)
+                    | (&Type::Integer16, &Type::Integer16)
+                    | (&Type::Integer32, &Type::Integer32)
+                    | (&Type::Integer64, &Type::Integer64)
+                    | (&Type::Natural8, &Type::Natural8)
+                    | (&Type::Natural16, &Type::Natural16)
+                    | (&Type::Natural32, &Type::Natural32)
+                    | (&Type::Natural64, &Type::Natural64)
+                      => type1.clone(),
                     (ref type1, ref type2) => {
                         self.compiler.report_error(Error::InvalidOperandTypes {
                             span: expression_span,
@@ -358,6 +383,13 @@ impl<'source> fmt::Display for IrGenerator<'source> {
 
                 Instruction::Reference(variable1, variable2) => write!(f, "%{} = reference %{}", variable1, variable2)?,
                 Instruction::Dereference(variable1, variable2) => write!(f, "%{} = dereference %{}", variable1, variable2)?,
+
+                Instruction::Cast(variable1, variable2) => {
+                    let type1 = &self.variables[variable1].typ;
+                    let type2 = &self.variables[variable2].typ;
+                    // FIXME: impl Display for Type
+                    write!(f, "%{} = cast [{:?} to {:?}] %{}", variable1, type1, type2, variable2)?;
+                },
 
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
                 Instruction::Jump(index) => write!(f, "jump @{:<03}", index)?,
