@@ -54,6 +54,9 @@ pub struct IrGenerator<'source> {
     /// The instruction index of the beginning of the innermost loop at the current point of
     /// compilation.  This is where a `continue` statement jumps back to.
     innermost_loop_begin: Option<usize>,
+    /// An array of local variable names, in the order they were defined.  This stack is 'unwound'
+    /// every time a block is exited, erasing all locals defined in the block from `self.locals`.
+    locals_stack: Vec<&'source str>,
 }
 
 impl<'source> IrGenerator<'source> {
@@ -68,6 +71,7 @@ impl<'source> IrGenerator<'source> {
             function: &compiler.resolution_map[&*signature.name],
             break_instructions_to_insert: vec![],
             innermost_loop_begin: None,
+            locals_stack: vec![],
         };
         this.generate_ir_from_function(block);
         this
@@ -105,12 +109,18 @@ impl<'source> IrGenerator<'source> {
     /// Generate IR for a block of statements.  Return `true` if the block is guaranteed to
     /// diverge.
     fn generate_ir_from_block(&mut self, block: &'source Block<'source>) -> bool {
+        let locals_stack_length = self.locals_stack.len();
         let mut diverges = false;
 
         for statement in block {
             if self.generate_ir_from_statement(statement) {
                 diverges = true;
             }
+        }
+
+        while self.locals_stack.len() > locals_stack_length {
+            let name = self.locals_stack.pop().unwrap();
+            self.locals.remove(name);
         }
 
         diverges
@@ -146,6 +156,7 @@ impl<'source> IrGenerator<'source> {
             },
             Statement::VariableDefinition(name, ref value) => {
                 let variable = self.generate_ir_from_expression(value);
+                self.locals_stack.push(name);
                 self.locals.insert(name, variable);
             },
             Statement::Return(ref expression) => {
