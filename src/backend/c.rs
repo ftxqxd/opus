@@ -128,6 +128,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Multiply(destination, left, right) => writeln!(output, "var{} = var{} * var{};", destination, left, right)?,
         Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
 
+        Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
         Instruction::Reference(destination, value) => writeln!(output, "var{} = &var{};", destination, value)?,
         Instruction::Dereference(destination, value) => writeln!(output, "var{} = *var{};", destination, value)?,
 

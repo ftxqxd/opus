@@ -14,6 +14,7 @@ pub enum Token<'source> {
     Slash,
     Caret,
     At,
+    Tilde,
     Integer(u64, bool, u8),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
@@ -68,6 +69,7 @@ pub enum Expression<'source> {
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
     Dereference(Box<Expression<'source>>),
+    Negate(Box<Expression<'source>>),
 }
 
 #[derive(Debug)]
@@ -287,6 +289,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('/') => Ok(Token::Slash),
             Some('^') => Ok(Token::Caret),
             Some('@') => Ok(Token::At),
+            Some('~') => Ok(Token::Tilde),
             Some(c @ '0'...'9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'...'9') = self.peek() {
@@ -499,6 +502,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.expect(&Token::Equals)?;
                 let value = self.parse_expression()?;
                 Expression::Assignment(variable_name, value)
+            },
+            Token::Tilde => {
+                let subexpression = self.parse_atom()?;
+                Expression::Negate(subexpression)
             },
             t => return Err(Error::UnexpectedToken(t)),
         };

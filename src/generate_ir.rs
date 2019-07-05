@@ -14,6 +14,7 @@ pub enum Instruction<'source> {
     Multiply(VariableId, VariableId, VariableId),
     Divide(VariableId, VariableId, VariableId),
 
+    Negate(VariableId, VariableId),
     Reference(VariableId, VariableId),
     Dereference(VariableId, VariableId),
 
@@ -339,11 +340,31 @@ impl<'source> IrGenerator<'source> {
                     let output_index = self.new_variable(output_variable);
 
                     self.instructions.push(Instruction::Dereference(output_index, index));
-
                     output_index
                 } else {
                     self.compiler.report_error(Error::InvalidOperandType { span: expression_span, typ: variable.typ.clone() });
                     self.generate_error()
+                }
+            },
+            Expression::Negate(ref subexpression) => {
+                let sub_index = self.generate_ir_from_expression(subexpression);
+                let sub_variable = &self.variables[sub_index];
+
+                match sub_variable.typ {
+                    Type::Integer8
+                    | Type::Integer16
+                    | Type::Integer32
+                    | Type::Integer64 => {
+                        let output_variable = Variable { typ: sub_variable.typ.clone() };
+                        let output_index = self.new_variable(output_variable);
+
+                        self.instructions.push(Instruction::Negate(output_index, sub_index));
+                        output_index
+                    },
+                    _ => {
+                        self.compiler.report_error(Error::InvalidOperandType { span: expression_span, typ: sub_variable.typ.clone() });
+                        self.generate_error()
+                    }
                 }
             },
         }
@@ -381,6 +402,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
 
+                Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
                 Instruction::Reference(variable1, variable2) => write!(f, "%{} = reference %{}", variable1, variable2)?,
                 Instruction::Dereference(variable1, variable2) => write!(f, "%{} = dereference %{}", variable1, variable2)?,
 
