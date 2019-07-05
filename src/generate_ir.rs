@@ -144,6 +144,10 @@ impl<'source> IrGenerator<'source> {
             Statement::Expression(ref expression) => {
                 self.generate_ir_from_expression(expression);
             },
+            Statement::VariableDefinition(name, ref value) => {
+                let variable = self.generate_ir_from_expression(value);
+                self.locals.insert(name, variable);
+            },
             Statement::Return(ref expression) => {
                 let return_variable = self.generate_ir_from_expression(expression);
 
@@ -278,11 +282,6 @@ impl<'source> IrGenerator<'source> {
                     self.compiler.report_error(Error::UndefinedFunction(expression_span, name));
                     self.generate_error()
                 }
-            },
-            Expression::Assignment(name, ref value) => {
-                let variable = self.generate_ir_from_expression(value);
-                self.locals.insert(name, variable);
-                variable
             },
             Expression::BinaryOperator(operator, ref left, ref right) => {
                 let left_variable = self.generate_ir_from_expression(left);

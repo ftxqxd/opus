@@ -65,7 +65,6 @@ pub enum Expression<'source> {
     Integer(u64, bool, u8),
     Variable(&'source str),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
-    Assignment(&'source str, Box<Expression<'source>>),
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
     Dereference(Box<Expression<'source>>),
@@ -74,6 +73,7 @@ pub enum Expression<'source> {
 
 #[derive(Debug)]
 pub enum Statement<'source> {
+    VariableDefinition(&'source str, Box<Expression<'source>>),
     Expression(Box<Expression<'source>>),
     Return(Box<Expression<'source>>),
     If(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
@@ -497,12 +497,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     }
                 }
             },
-            Token::Var => {
-                let variable_name = self.parse_lowercase_identifier()?;
-                self.expect(&Token::Equals)?;
-                let value = self.parse_expression()?;
-                Expression::Assignment(variable_name, value)
-            },
             Token::Tilde => {
                 let subexpression = self.parse_atom()?;
                 Expression::Negate(subexpression)
@@ -537,6 +531,13 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let low = self.token_low;
 
         let statement = match token {
+            Token::Var => {
+                let _ = self.parse_token();
+                let variable_name = self.parse_lowercase_identifier()?;
+                self.expect(&Token::Equals)?;
+                let value = self.parse_expression()?;
+                Statement::VariableDefinition(variable_name, value)
+            },
             Token::Return => {
                 let _ = self.parse_token();
                 Statement::Return(self.parse_expression()?)
