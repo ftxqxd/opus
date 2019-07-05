@@ -15,7 +15,7 @@ pub enum Instruction<'source> {
     Divide(VariableId, VariableId, VariableId),
 
     Negate(VariableId, VariableId),
-    Reference(VariableId, VariableId),
+    Reference(VariableId, Lvalue),
     Dereference(VariableId, VariableId),
 
     Cast(VariableId, VariableId),
@@ -27,6 +27,13 @@ pub enum Instruction<'source> {
     Nop,
     BreakPlaceholder,
     Error(VariableId),
+}
+
+#[derive(Debug)]
+pub enum Lvalue {
+    Variable(VariableId),
+    Dereference(VariableId),
+    Error,
 }
 
 type VariableId = usize;
@@ -332,12 +339,11 @@ impl<'source> IrGenerator<'source> {
                 output_variable
             },
             Expression::Reference(ref subexpression) => {
-                let index = self.generate_ir_from_expression(subexpression);
-                let variable = &self.variables[index];
-                let output_variable = Variable { typ: Type::Pointer(Box::new(variable.typ.clone())) };
+                let (lvalue, typ) = self.generate_ir_from_lvalue(subexpression);
+                let output_variable = Variable { typ: Type::Pointer(Box::new(typ)) };
                 let output_index = self.new_variable(output_variable);
 
-                self.instructions.push(Instruction::Reference(output_index, index));
+                self.instructions.push(Instruction::Reference(output_index, lvalue));
 
                 output_index
             },
@@ -379,6 +385,34 @@ impl<'source> IrGenerator<'source> {
             },
         }
     }
+
+    fn generate_ir_from_lvalue(&mut self, expression: &'source Expression<'source>) -> (Lvalue, Type) {
+        let span = self.compiler.expression_span(expression);
+        match *expression {
+            Expression::Variable(s) => {
+                if let Some(&variable) = self.locals.get(s) {
+                    let typ = self.variables[variable].typ.clone();
+                    return (Lvalue::Variable(variable), typ)
+                } else {
+                    self.compiler.report_error(Error::UndefinedVariable(s));
+                }
+            },
+            Expression::Dereference(ref subexpression) => {
+                let index = self.generate_ir_from_expression(subexpression);
+                let variable = &self.variables[index];
+
+                if let Type::Pointer(ref subtype) = variable.typ {
+                    return (Lvalue::Dereference(index), (**subtype).clone())
+                } else {
+                    self.compiler.report_error(Error::InvalidOperandType { span, typ: variable.typ.clone() });
+                }
+            },
+            _ => {
+                self.compiler.report_error(Error::InvalidLvalue(span));
+            },
+        }
+        (Lvalue::Error, Type::Error)
+    }
 }
 
 impl<'source> fmt::Display for IrGenerator<'source> {
@@ -413,7 +447,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
 
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
-                Instruction::Reference(variable1, variable2) => write!(f, "%{} = reference %{}", variable1, variable2)?,
+                Instruction::Reference(variable1, ref lvalue) => write!(f, "%{} = reference %{:?}", variable1, lvalue)?,
+                // FIXME: impl Display for Lvalue
                 Instruction::Dereference(variable1, variable2) => write!(f, "%{} = dereference %{}", variable1, variable2)?,
 
                 Instruction::Cast(variable1, variable2) => {

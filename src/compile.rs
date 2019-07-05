@@ -75,6 +75,7 @@ pub enum Error<'source> {
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
+    InvalidLvalue(&'source str),
 }
 
 impl Type {

@@ -30,7 +30,7 @@ pub fn compile_source<W: Write>(src: &str, output: &mut W) {
             let span = compiler.definition_spans[&(&**definition as *const _)];
             let ir_generator = IrGenerator::from_function(&compiler, sig, block, span);
 
-            //println!("{}", ir_generator);
+            eprintln!("{}", ir_generator);
             if compiler.has_errors.get() {
                 translate = false;
             }

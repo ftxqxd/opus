@@ -4,7 +4,7 @@
 //! `generate_ir.rs`) and C code.
 
 use std::io::{self, Write};
-use crate::generate_ir::{IrGenerator, Instruction};
+use crate::generate_ir::{IrGenerator, Instruction, Lvalue};
 use crate::compile::{Function, Type, Compiler};
 
 /// Initialize C code generation by writing necessary `#include` statements, function prototypes,
@@ -85,6 +85,14 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
     write!(output, ")")
 }
 
+fn translate_lvalue_to_c<W: Write>(_ir: &IrGenerator, output: &mut W, lvalue: &Lvalue) -> io::Result<()> {
+    match *lvalue {
+        Lvalue::Variable(id) => write!(output, "var{}", id),
+        Lvalue::Dereference(id) => write!(output, "*var{}", id),
+        _ => Ok(()),
+    }
+}
+
 fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type) -> io::Result<()> {
     match *typ {
         Type::Integer8 => write!(output, "int8_t"),
@@ -129,7 +137,11 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
 
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
-        Instruction::Reference(destination, value) => writeln!(output, "var{} = &var{};", destination, value)?,
+        Instruction::Reference(destination, ref lvalue) => {
+            write!(output, "var{} = &", destination)?;
+            translate_lvalue_to_c(ir, output, lvalue)?;
+            writeln!(output, ";")?;
+        },
         Instruction::Dereference(destination, value) => writeln!(output, "var{} = *var{};", destination, value)?,
 
         Instruction::Cast(destination, source) => {
