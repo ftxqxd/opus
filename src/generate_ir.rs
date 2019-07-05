@@ -163,8 +163,12 @@ impl<'source> IrGenerator<'source> {
             },
             Statement::VariableDefinition(name, ref value) => {
                 let variable = self.generate_ir_from_expression(value);
-                self.locals_stack.push(name);
-                self.locals.insert(name, variable);
+                if self.locals_stack.contains(&name) {
+                    self.compiler.report_error(Error::ShadowedName(name));
+                } else {
+                    self.locals_stack.push(name);
+                    self.locals.insert(name, variable);
+                }
             },
             Statement::Return(ref expression) => {
                 let return_variable = self.generate_ir_from_expression(expression);

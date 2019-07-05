@@ -68,6 +68,7 @@ impl fmt::Display for Function {
 #[derive(Debug)]
 pub enum Error<'source> {
     UndefinedVariable(&'source str),
+    ShadowedName(&'source str),
     UndefinedFunction(&'source str, &'source FunctionName<'source>),
     UnexpectedType { span: &'source str, expected: Type, found: Type },
     InvalidOperandTypes { span: &'source str, left: Type, right: Type },
