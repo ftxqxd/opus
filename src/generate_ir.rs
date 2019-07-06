@@ -7,6 +7,7 @@ use crate::compile::{Type, Compiler, Error, Function};
 #[derive(Debug)]
 pub enum Instruction<'source> {
     ConstantInteger(VariableId, u64),
+    Null(VariableId),
     Call(VariableId, &'source Function, Box<[VariableId]>),
 
     Assign(Lvalue, VariableId),
@@ -48,9 +49,10 @@ struct LvalueData {
 
 type VariableId = usize;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Variable {
     pub typ: Type,
+    pub is_temporary: bool,
 }
 
 #[derive(Debug)]
@@ -100,7 +102,7 @@ impl<'source> IrGenerator<'source> {
     }
 
     fn generate_error(&mut self) -> VariableId {
-        let variable = self.new_variable(Variable { typ: Type::Error });
+        let variable = self.new_variable(Variable { typ: Type::Error, is_temporary: true });
         self.instructions.push(Instruction::Error(variable));
         variable
     }
@@ -108,7 +110,7 @@ impl<'source> IrGenerator<'source> {
     fn generate_ir_from_function(&mut self, block: &'source Block<'source>) {
         for &(name, ref type_expression) in &self.signature.arguments {
             let typ = self.compiler.resolve_type(type_expression);
-            let argument_id = self.new_variable(Variable { typ });
+            let argument_id = self.new_variable(Variable { typ, is_temporary: false });
             self.locals.insert(name, argument_id);
         }
 
@@ -153,7 +155,7 @@ impl<'source> IrGenerator<'source> {
             variable
         } else if found_type.can_autocast_to(expected_type) {
             // do an autocast
-            let return_variable = self.new_variable(Variable { typ: expected_type.clone() });
+            let return_variable = self.new_variable(Variable { typ: expected_type.clone(), is_temporary: true });
             self.instructions.push(Instruction::Cast(return_variable, variable));
             return_variable
         } else {
@@ -172,12 +174,26 @@ impl<'source> IrGenerator<'source> {
                 self.generate_ir_from_expression(expression);
             },
             Statement::VariableDefinition(name, ref value) => {
-                let variable = self.generate_ir_from_expression(value);
+                let variable_id = self.generate_ir_from_expression(value);
+                let variable = &mut self.variables[variable_id];
                 if self.locals_stack.contains(&name) {
                     self.compiler.report_error(Error::ShadowedName(name));
                 } else {
+                    let output_variable_id = if variable.is_temporary {
+                        variable.is_temporary = false;
+                        variable_id
+                    } else {
+                        let variable = variable.clone();
+                        let new_variable_id = self.new_variable(Variable {
+                            is_temporary: false,
+                            ..variable
+                        });
+                        self.instructions.push(Instruction::Assign(Lvalue::Variable(new_variable_id), variable_id));
+                        new_variable_id
+                    };
+
                     self.locals_stack.push(name);
-                    self.locals.insert(name, variable);
+                    self.locals.insert(name, output_variable_id);
                 }
             },
             Statement::Assignment(ref left, ref right) => {
@@ -298,9 +314,14 @@ impl<'source> IrGenerator<'source> {
                     (true, 64) => Type::Integer64,
                     _ => unreachable!(),
                 };
-                let variable = self.new_variable(Variable { typ });
+                let variable = self.new_variable(Variable { typ, is_temporary: true });
                 self.instructions.push(Instruction::ConstantInteger(variable, i));
                 variable
+            },
+            Expression::Null => {
+                let variable_id = self.new_variable(Variable { typ: Type::Null, is_temporary: true });
+                self.instructions.push(Instruction::Null(variable_id));
+                variable_id
             },
             Expression::Variable(name) => {
                 if let Some(&variable) = self.locals.get(name) {
@@ -316,7 +337,7 @@ impl<'source> IrGenerator<'source> {
                     self.generate_error()
                 } else {
                     let typ = self.compiler.resolve_type(type_expression);
-                    let variable = self.new_variable(Variable { typ });
+                    let variable = self.new_variable(Variable { typ, is_temporary: false });
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable);
                     variable
@@ -333,7 +354,7 @@ impl<'source> IrGenerator<'source> {
                         self.autocast_variable_to_type(found_variable, expected_type, span);
                     }
 
-                    let variable = self.new_variable(Variable { typ: function.return_type.clone()});
+                    let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
                     self.instructions.push(Instruction::Call(variable, function, argument_variables.into()));
                     variable
                 } else {
@@ -357,6 +378,10 @@ impl<'source> IrGenerator<'source> {
                     | (&Type::Natural32, &Type::Natural32)
                     | (&Type::Natural64, &Type::Natural64)
                       => type1.clone(),
+                    (&Type::Reference(_), _) | (&Type::MutableReference(_), _) if type2.is_integral() => type1.clone(),
+                    (_, &Type::Error)
+                    | (&Type::Error, _)
+                      => Type::Error,
                     (ref type1, ref type2) => {
                         self.compiler.report_error(Error::InvalidOperandTypes {
                             span: expression_span,
@@ -373,14 +398,14 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::Times => Instruction::Multiply,
                     BinaryOperator::Divide => Instruction::Divide,
                 };
-                let output_variable = self.new_variable(Variable { typ: output_type });
+                let output_variable = self.new_variable(Variable { typ: output_type, is_temporary: true });
                 self.instructions.push(operation(output_variable, left_variable, right_variable));
 
                 output_variable
             },
             Expression::Reference(ref subexpression) => {
                 let LvalueData { lvalue, typ, .. } = self.generate_ir_from_lvalue(subexpression);
-                let output_variable = Variable { typ: Type::Reference(Box::new(typ)) };
+                let output_variable = Variable { typ: Type::Reference(Box::new(typ)), is_temporary: true };
                 let output_index = self.new_variable(output_variable);
 
                 self.instructions.push(Instruction::Reference(output_index, lvalue));
@@ -395,7 +420,7 @@ impl<'source> IrGenerator<'source> {
                     self.compiler.report_error(Error::ImmutableLvalue(span));
                 }
 
-                let output_variable = Variable { typ: Type::MutableReference(Box::new(typ)) };
+                let output_variable = Variable { typ: Type::MutableReference(Box::new(typ)), is_temporary: true };
                 let output_index = self.new_variable(output_variable);
 
                 self.instructions.push(Instruction::MutableReference(output_index, lvalue));
@@ -407,13 +432,13 @@ impl<'source> IrGenerator<'source> {
                 let variable = &self.variables[index];
 
                 if let Type::Reference(ref subtype) = variable.typ {
-                    let output_variable = Variable { typ: (**subtype).clone() };
+                    let output_variable = Variable { typ: (**subtype).clone(), is_temporary: true };
                     let output_index = self.new_variable(output_variable);
 
                     self.instructions.push(Instruction::Dereference(output_index, index));
                     output_index
                 } else if let Type::MutableReference(ref subtype) = variable.typ {
-                    let output_variable = Variable { typ: (**subtype).clone() };
+                    let output_variable = Variable { typ: (**subtype).clone(), is_temporary: true };
                     let output_index = self.new_variable(output_variable);
 
                     self.instructions.push(Instruction::Dereference(output_index, index));
@@ -432,7 +457,7 @@ impl<'source> IrGenerator<'source> {
                     | Type::Integer16
                     | Type::Integer32
                     | Type::Integer64 => {
-                        let output_variable = Variable { typ: sub_variable.typ.clone() };
+                        let output_variable = Variable { typ: sub_variable.typ.clone(), is_temporary: true };
                         let output_index = self.new_variable(output_variable);
 
                         self.instructions.push(Instruction::Negate(output_index, sub_index));
@@ -467,7 +492,7 @@ impl<'source> IrGenerator<'source> {
                     self.compiler.report_error(Error::ShadowedName(name));
                 } else {
                     let typ = self.compiler.resolve_type(type_expression);
-                    let variable = self.new_variable(Variable { typ: typ.clone() });
+                    let variable = self.new_variable(Variable { typ: typ.clone(), is_temporary: false });
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable);
                     return LvalueData {
@@ -524,6 +549,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
 
             match *instruction {
                 Instruction::ConstantInteger(destination, value) => write!(f, "%{} = {}", destination, value)?,
+                Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
                 Instruction::Call(destination, function, ref arguments) => {
                     write!(f, "%{} = call @{}", destination, function)?;
                     for argument in arguments.iter() {

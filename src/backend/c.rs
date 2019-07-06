@@ -12,7 +12,6 @@ use crate::compile::{Function, Type, Compiler};
 pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<()> {
     // Headers
     writeln!(output, "#include <stdint.h>")?;
-    writeln!(output, "#include <stdio.h>")?;
 
     // Builtin types
     writeln!(output, "typedef uint8_t _opust_null;")?;
@@ -22,9 +21,6 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
         translate_function_signature_to_c(compiler, function, output)?;
         writeln!(output, ";")?;
     }
-
-    // Builtins
-    writeln!(output, r#"_opust_null _opus_Print__int64(int64_t var0) {{ printf("%d\n", var0); return 0; }}"#)?;
 
     // Main
     writeln!(output, "int main(void) {{ return _opus_Main(); }}")?;
@@ -122,6 +118,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
     let instruction = &ir.instructions[instruction_index];
     match *instruction {
         Instruction::ConstantInteger(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
+        Instruction::Null(destination) => writeln!(output, "var{} = 0;", destination)?,
         Instruction::Call(destination, function, ref arguments) => {
             write!(output, "var{} = ", destination)?;
             mangle_function_name(function, output)?;

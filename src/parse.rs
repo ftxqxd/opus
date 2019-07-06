@@ -29,6 +29,7 @@ pub enum Token<'source> {
     Extern,
     Ref,
     Mut,
+    Null,
     EndOfFile,
 }
 
@@ -64,6 +65,7 @@ impl BinaryOperator {
 #[derive(Debug, PartialEq)]
 pub enum Expression<'source> {
     Integer(u64, bool, u8),
+    Null,
     Variable(&'source str),
     VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
@@ -371,6 +373,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "extern" => Ok(Token::Extern),
                     "ref" => Ok(Token::Ref),
                     "mut" => Ok(Token::Mut),
+                    "null" => Ok(Token::Null),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -519,6 +522,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.expect(&Token::Colon)?;
                 let type_expression = self.parse_expression()?;
                 Expression::VariableDefinition(variable_name, type_expression)
+            },
+            Token::Null => {
+                Expression::Null
             },
             t => return Err(Error::UnexpectedToken(t)),
         };

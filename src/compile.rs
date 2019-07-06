@@ -113,6 +113,17 @@ impl Type {
             | (&Type::Natural16, &Type::Integer32)
             | (&Type::Natural8, &Type::Integer16)
               => true,
+            // mut -> ref
+            (&Type::MutableReference(ref typ1), &Type::Reference(ref typ2)) if typ1 == typ2
+              => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_integral(&self) -> bool {
+        match *self {
+            Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64
+            | Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 => true,
             _ => false,
         }
     }
@@ -153,7 +164,7 @@ impl<'source> Compiler<'source> {
             Expression::Variable("nat16") => Type::Natural16,
             Expression::Variable("nat32") => Type::Natural32,
             Expression::Variable("nat64") => Type::Natural64,
-            Expression::Variable("null") => Type::Null,
+            Expression::Null => Type::Null,
             Expression::Reference(ref subexpression) => Type::Reference(Box::new(self.resolve_type(subexpression))),
             Expression::MutableReference(ref subexpression) => Type::MutableReference(Box::new(self.resolve_type(subexpression))),
             _ => Type::Error,
