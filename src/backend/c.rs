@@ -15,6 +15,7 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
 
     // Builtin types
     writeln!(output, "typedef uint8_t _opust_null;")?;
+    writeln!(output, "typedef uint8_t _opust_bool;")?;
 
     // Prototypes
     for (_, function) in compiler.resolution_map.iter() {
@@ -100,6 +101,7 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type
         Type::Natural32 => write!(output, "uint32_t"),
         Type::Natural64 => write!(output, "uint64_t"),
         Type::Null => write!(output, "_opust_null"),
+        Type::Bool => write!(output, "_opust_bool"),
         Type::Reference(ref subtype) => {
             write!(output, "const ")?;
             translate_type_to_c(compiler, output, subtype)?;
@@ -119,6 +121,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
     match *instruction {
         Instruction::ConstantInteger(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
         Instruction::Null(destination) => writeln!(output, "var{} = 0;", destination)?,
+        Instruction::Bool(destination, is_true) => writeln!(output, "var{} = {};", destination, if is_true { 1 } else { 0 })?,
         Instruction::Call(destination, function, ref arguments) => {
             write!(output, "var{} = ", destination)?;
             mangle_function_name(function, output)?;
@@ -141,6 +144,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
         Instruction::Multiply(destination, left, right) => writeln!(output, "var{} = var{} * var{};", destination, left, right)?,
         Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
+        Instruction::Equals(destination, left, right) => writeln!(output, "var{} = var{} == var{};", destination, left, right)?,
 
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
         Instruction::Reference(destination, ref lvalue)
@@ -224,6 +228,7 @@ fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
         Type::Natural32 => write!(output, "nat32"),
         Type::Natural64 => write!(output, "nat64"),
         Type::Null => write!(output, "null"),
+        Type::Bool => write!(output, "bool"),
         Type::Reference(ref subtype) => {
             write!(output, "ReferenceTo")?;
             mangle_type_name(subtype, output)

@@ -8,6 +8,7 @@ pub enum Token<'source> {
     RightParenthesis,
     Colon,
     Equals,
+    ColonEquals,
     Plus,
     Minus,
     Asterisk,
@@ -30,6 +31,8 @@ pub enum Token<'source> {
     Ref,
     Mut,
     Null,
+    False,
+    True,
     EndOfFile,
 }
 
@@ -39,6 +42,7 @@ pub enum BinaryOperator {
     Minus,
     Times,
     Divide,
+    Equals,
 }
 
 impl BinaryOperator {
@@ -48,16 +52,32 @@ impl BinaryOperator {
             Token::Minus => Some(BinaryOperator::Minus),
             Token::Asterisk => Some(BinaryOperator::Times),
             Token::Slash => Some(BinaryOperator::Divide),
+            Token::Equals => Some(BinaryOperator::Equals),
             _ => None,
         }
     }
 
     fn precedence(&self) -> Precedence {
         match *self {
-            BinaryOperator::Plus => 10,
-            BinaryOperator::Minus => 10,
-            BinaryOperator::Times => 11,
-            BinaryOperator::Divide => 11,
+            BinaryOperator::Equals => 20,
+            BinaryOperator::Plus => 30,
+            BinaryOperator::Minus => 30,
+            BinaryOperator::Times => 31,
+            BinaryOperator::Divide => 31,
+        }
+    }
+
+    pub fn is_arithmetic(&self) -> bool {
+        match *self {
+            BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Times | BinaryOperator::Divide => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_comparison(&self) -> bool {
+        match *self {
+            BinaryOperator::Equals => true,
+            _ => false,
         }
     }
 }
@@ -66,6 +86,7 @@ impl BinaryOperator {
 pub enum Expression<'source> {
     Integer(u64, bool, u8),
     Null,
+    Bool(bool),
     Variable(&'source str),
     VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
@@ -288,7 +309,15 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         match self.advance() {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
-            Some(':') => Ok(Token::Colon),
+            Some(':') => {
+                match self.peek() {
+                    Some('=') => {
+                        self.advance();
+                        Ok(Token::ColonEquals)
+                    },
+                    _ => Ok(Token::Colon)
+                }
+            },
             Some('=') => Ok(Token::Equals),
             Some('+') => Ok(Token::Plus),
             Some('-') => Ok(Token::Minus),
@@ -375,6 +404,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "ref" => Ok(Token::Ref),
                     "mut" => Ok(Token::Mut),
                     "null" => Ok(Token::Null),
+                    "false" => Ok(Token::False),
+                    "true" => Ok(Token::True),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -532,6 +563,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Null => {
                 Expression::Null
             },
+            Token::False => {
+                Expression::Bool(false)
+            },
+            Token::True => {
+                Expression::Bool(true)
+            },
             t => return Err(Error::UnexpectedToken(t)),
         };
 
@@ -560,7 +597,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Var => {
                 let _ = self.parse_token();
                 let variable_name = self.parse_lowercase_identifier()?;
-                self.expect(&Token::Equals)?;
+                self.expect(&Token::ColonEquals)?;
                 let value = self.parse_expression()?;
                 Statement::VariableDefinition(variable_name, value)
             },
@@ -599,8 +636,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let expression = self.parse_expression()?;
 
                 match self.peek_token()? {
-                    Token::Equals => {
-                        // Assignment expression `a = b`
+                    Token::ColonEquals => {
+                        // Assignment expression `a := b`
                         let _ = self.parse_token();
                         let right = self.parse_expression()?;
                         Statement::Assignment(expression, right)

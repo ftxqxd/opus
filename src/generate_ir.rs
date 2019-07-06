@@ -8,6 +8,7 @@ use crate::compile::{Type, Compiler, Error, Function};
 pub enum Instruction<'source> {
     ConstantInteger(VariableId, u64),
     Null(VariableId),
+    Bool(VariableId, bool),
     Call(VariableId, &'source Function, Box<[VariableId]>),
 
     Assign(Lvalue, VariableId),
@@ -16,6 +17,7 @@ pub enum Instruction<'source> {
     Subtract(VariableId, VariableId, VariableId),
     Multiply(VariableId, VariableId, VariableId),
     Divide(VariableId, VariableId, VariableId),
+    Equals(VariableId, VariableId, VariableId),
 
     Negate(VariableId, VariableId),
     Reference(VariableId, Lvalue),
@@ -220,7 +222,13 @@ impl<'source> IrGenerator<'source> {
                 return true
             },
             Statement::If(ref condition, ref then_block, ref else_block) => {
-                let condition_variable = self.generate_ir_from_expression(condition);
+                let mut condition_variable = self.generate_ir_from_expression(condition);
+                let typ = &self.variables[condition_variable].typ;
+                if *typ != Type::Bool {
+                    let span = self.compiler.expression_span(condition);
+                    self.compiler.report_error(Error::UnexpectedType { span, expected: Type::Bool, found: typ.clone() });
+                    condition_variable = self.generate_error();
+                }
 
                 let mut diverges = true;
 
@@ -247,7 +255,15 @@ impl<'source> IrGenerator<'source> {
             Statement::While(ref condition, ref then_block, ref else_block) => {
                 let loop_start = self.instructions.len();
 
-                let condition_variable = self.generate_ir_from_expression(condition);
+                let is_infinite = if let Expression::Bool(true) = **condition { true } else { false };
+
+                let mut condition_variable = self.generate_ir_from_expression(condition);
+                let typ = &self.variables[condition_variable].typ;
+                if *typ != Type::Bool {
+                    let span = self.compiler.expression_span(condition);
+                    self.compiler.report_error(Error::UnexpectedType { span, expected: Type::Bool, found: typ.clone() });
+                    condition_variable = self.generate_error();
+                }
 
                 let branch = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
@@ -262,7 +278,7 @@ impl<'source> IrGenerator<'source> {
                 self.innermost_loop_begin = old_innermost_loop_begin;
 
                 let else_branch = self.instructions.len();
-                let diverges = self.generate_ir_from_block(else_block);
+                let diverges = self.generate_ir_from_block(else_block) | is_infinite;
                 let else_jump = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
 
@@ -323,6 +339,11 @@ impl<'source> IrGenerator<'source> {
                 self.instructions.push(Instruction::Null(variable_id));
                 variable_id
             },
+            Expression::Bool(is_true) => {
+                let variable_id = self.new_variable(Variable { typ: Type::Bool, is_temporary: true });
+                self.instructions.push(Instruction::Bool(variable_id, is_true));
+                variable_id
+            },
             Expression::Variable(name) => {
                 if let Some(&variable) = self.locals.get(name) {
                     variable
@@ -369,22 +390,13 @@ impl<'source> IrGenerator<'source> {
                 let type1 = &self.variables[left_variable].typ;
                 let type2 = &self.variables[right_variable].typ;
                 let output_type = match (type1, type2) {
-                    (&Type::Integer8, &Type::Integer8)
-                    | (&Type::Integer16, &Type::Integer16)
-                    | (&Type::Integer32, &Type::Integer32)
-                    | (&Type::Integer64, &Type::Integer64)
-                    | (&Type::Natural8, &Type::Natural8)
-                    | (&Type::Natural16, &Type::Natural16)
-                    | (&Type::Natural32, &Type::Natural32)
-                    | (&Type::Natural64, &Type::Natural64)
-                      => type1.clone(),
+                    (_, _) if type1 == type2 && type1.is_integral() && operator.is_arithmetic() => type1.clone(),
+                    (_, _) if type1 == type2 && type1.is_integral() && operator.is_comparison() => Type::Bool,
                     (&Type::Reference(_), _) | (&Type::MutableReference(_), _)
                         if type2.is_integral() && (operator == BinaryOperator::Plus || operator == BinaryOperator::Minus)
                       => type1.clone(),
-                    (_, &Type::Error)
-                    | (&Type::Error, _)
-                      => Type::Error,
-                    (ref type1, ref type2) => {
+                    (_, &Type::Error) | (&Type::Error, _) => Type::Error,
+                    (_, _) => {
                         self.compiler.report_error(Error::InvalidOperandTypes {
                             span: expression_span,
                             left: (*type1).clone(),
@@ -399,6 +411,7 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::Minus => Instruction::Subtract,
                     BinaryOperator::Times => Instruction::Multiply,
                     BinaryOperator::Divide => Instruction::Divide,
+                    BinaryOperator::Equals => Instruction::Equals,
                 };
                 let output_variable = self.new_variable(Variable { typ: output_type, is_temporary: true });
                 self.instructions.push(operation(output_variable, left_variable, right_variable));
@@ -558,6 +571,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
             match *instruction {
                 Instruction::ConstantInteger(destination, value) => write!(f, "%{} = {}", destination, value)?,
                 Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
+                Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
                 Instruction::Call(destination, function, ref arguments) => {
                     write!(f, "%{} = call @{}", destination, function)?;
                     for argument in arguments.iter() {
@@ -572,6 +586,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::Equals(variable1, variable2, variable3) => write!(f, "%{} = equals %{}, %{}", variable1, variable2, variable3)?,
 
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
                 Instruction::Reference(variable1, ref lvalue) => write!(f, "%{} = reference %{:?}", variable1, lvalue)?,
