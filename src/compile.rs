@@ -2,6 +2,7 @@ use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
 use crate::parse::{FunctionName, Definition, Expression, Statement};
+use crate::frontend::Options;
 
 #[derive(Debug)]
 pub struct Compiler<'source> {
@@ -11,6 +12,8 @@ pub struct Compiler<'source> {
     pub expression_spans: HashMap<*const Expression<'source>, &'source str>,
     pub statement_spans: HashMap<*const Statement<'source>, &'source str>,
     pub definition_spans: HashMap<*const Definition<'source>, &'source str>,
+
+    pub options: Options,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,7 +148,7 @@ impl Type {
 }
 
 impl<'source> Compiler<'source> {
-    pub fn new() -> Self {
+    pub fn with_options(options: Options) -> Self {
         let mut resolution_map: HashMap<&FunctionName, _> = HashMap::new();
         static PRINT_NAME: [Option<&'static str>; 2] = [Some("Print"), None];
         let print_function = Function {
@@ -161,6 +164,7 @@ impl<'source> Compiler<'source> {
             expression_spans: HashMap::new(),
             statement_spans: HashMap::new(),
             definition_spans: HashMap::new(),
+            options,
         }
     }
 
