@@ -389,6 +389,32 @@ impl<'source> IrGenerator<'source> {
                 }
             },
             Expression::BinaryOperator(operator, ref left, ref right) => {
+                let operation = match operator {
+                    BinaryOperator::Plus => Instruction::Add,
+                    BinaryOperator::Minus => Instruction::Subtract,
+                    BinaryOperator::Times => Instruction::Multiply,
+                    BinaryOperator::Divide => Instruction::Divide,
+                    BinaryOperator::Modulo => Instruction::Modulo,
+                    BinaryOperator::Equals => Instruction::Equals,
+                    BinaryOperator::LessThan => Instruction::LessThan,
+                    BinaryOperator::GreaterThan => Instruction::GreaterThan,
+                    BinaryOperator::LessThanEquals => Instruction::LessThanEquals,
+                    BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
+                    BinaryOperator::Cast => {
+                        let variable_id = self.generate_ir_from_expression(left);
+                        let old_type = &self.variables[variable_id].typ;
+                        let typ = self.compiler.resolve_type(right);
+                        if old_type.can_cast_to(&typ) {
+                            let new_variable_id = self.new_variable(Variable { typ, is_temporary: true });
+                            self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
+                            return new_variable_id
+                        } else {
+                            self.compiler.report_error(Error::InvalidCast { span: expression_span, from: old_type.clone(), to: typ });
+                            return self.generate_error()
+                        }
+                    },
+                };
+
                 let left_variable = self.generate_ir_from_expression(left);
                 let right_variable = self.generate_ir_from_expression(right);
 
@@ -411,18 +437,6 @@ impl<'source> IrGenerator<'source> {
                     },
                 };
 
-                let operation = match operator {
-                    BinaryOperator::Plus => Instruction::Add,
-                    BinaryOperator::Minus => Instruction::Subtract,
-                    BinaryOperator::Times => Instruction::Multiply,
-                    BinaryOperator::Divide => Instruction::Divide,
-                    BinaryOperator::Modulo => Instruction::Modulo,
-                    BinaryOperator::Equals => Instruction::Equals,
-                    BinaryOperator::LessThan => Instruction::LessThan,
-                    BinaryOperator::GreaterThan => Instruction::GreaterThan,
-                    BinaryOperator::LessThanEquals => Instruction::LessThanEquals,
-                    BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
-                };
                 let output_variable = self.new_variable(Variable { typ: output_type, is_temporary: true });
                 self.instructions.push(operation(output_variable, left_variable, right_variable));
 

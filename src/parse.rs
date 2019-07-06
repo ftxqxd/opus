@@ -8,6 +8,8 @@ pub enum Token<'source> {
     RightParenthesis,
     Colon,
     ColonEquals,
+    #[allow(non_camel_case_types)]
+    T_PAAMAYIM_NEKUDOTAYIM,
     Equals,
     LessThan,
     GreaterThan,
@@ -53,6 +55,7 @@ pub enum BinaryOperator {
     GreaterThan,
     LessThanEquals,
     GreaterThanEquals,
+    Cast,
 }
 
 impl BinaryOperator {
@@ -68,6 +71,7 @@ impl BinaryOperator {
             Token::GreaterThan => Some(BinaryOperator::GreaterThan),
             Token::LessThanEquals => Some(BinaryOperator::LessThanEquals),
             Token::GreaterThanEquals => Some(BinaryOperator::GreaterThanEquals),
+            Token::T_PAAMAYIM_NEKUDOTAYIM => Some(BinaryOperator::Cast),
             _ => None,
         }
     }
@@ -84,6 +88,7 @@ impl BinaryOperator {
             BinaryOperator::Times => 31,
             BinaryOperator::Divide => 31,
             BinaryOperator::Modulo => 31,
+            BinaryOperator::Cast => 40,
         }
     }
 
@@ -337,6 +342,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     Some('=') => {
                         self.advance();
                         Ok(Token::ColonEquals)
+                    },
+                    Some(':') => {
+                        self.advance();
+                        Ok(Token::T_PAAMAYIM_NEKUDOTAYIM)
                     },
                     _ => Ok(Token::Colon),
                 }

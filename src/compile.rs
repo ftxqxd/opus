@@ -80,6 +80,7 @@ pub enum Error<'source> {
     ContinueOutsideLoop(&'source str),
     InvalidLvalue(&'source str),
     ImmutableLvalue(&'source str),
+    InvalidCast { span: &'source str, from: Type, to: Type },
 }
 
 impl Type {
@@ -118,6 +119,19 @@ impl Type {
             (&Type::MutableReference(ref typ1), &Type::Reference(ref typ2)) if typ1 == typ2
               => true,
             _ => false,
+        }
+    }
+
+    pub fn can_cast_to(&self, other: &Type) -> bool {
+        if self.can_autocast_to(other) {
+            true
+        } else {
+            match (self, other) {
+                (_, _) if self.is_integral() && other.is_integral() => true,
+                (&Type::Reference(_), &Type::Reference(_))
+                | (&Type::MutableReference(_), &Type::MutableReference(_)) => true,
+                _ => false,
+            }
         }
     }
 
