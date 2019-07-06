@@ -378,7 +378,9 @@ impl<'source> IrGenerator<'source> {
                     | (&Type::Natural32, &Type::Natural32)
                     | (&Type::Natural64, &Type::Natural64)
                       => type1.clone(),
-                    (&Type::Reference(_), _) | (&Type::MutableReference(_), _) if type2.is_integral() => type1.clone(),
+                    (&Type::Reference(_), _) | (&Type::MutableReference(_), _)
+                        if type2.is_integral() && (operator == BinaryOperator::Plus || operator == BinaryOperator::Minus)
+                      => type1.clone(),
                     (_, &Type::Error)
                     | (&Type::Error, _)
                       => Type::Error,
