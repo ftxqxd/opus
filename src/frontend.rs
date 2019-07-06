@@ -12,6 +12,7 @@ use crate::backend::c;
 #[derive(Debug, Clone)]
 pub struct Options {
     pub debug: bool,
+    pub no_link: bool,
     pub filename: String,
     pub output_path: Option<String>,
 }
@@ -19,16 +20,19 @@ pub struct Options {
 pub fn main() {
     let mut options = Options {
         debug: false,
+        no_link: false,
         filename: String::new(),
         output_path: None,
     };
     {
         let mut ap = ArgumentParser::new();
         ap.set_description("The Opus compiler");
-        ap.refer(&mut options.debug)
-            .add_option(&["-Z", "--debug"], StoreTrue, "Output debugging information");
         ap.refer(&mut options.output_path)
             .add_option(&["-o", "--output"], argparse::StoreOption, "The file to compile to");
+        ap.refer(&mut options.debug)
+            .add_option(&["-Z", "--debug"], StoreTrue, "Output debugging information");
+        ap.refer(&mut options.no_link)
+            .add_option(&["-c", "--no-link"], StoreTrue, "Emit object file, don't link");
         ap.refer(&mut options.filename)
             .required()
             .add_argument("filename", Store, "The path of the file to compile");
@@ -38,15 +42,24 @@ pub fn main() {
     let source = fs::read_to_string(&options.filename);
     match source {
         Ok(source) => {
+            let s;
             let output_filename = if let Some(ref output_path) = &options.output_path {
-                output_path
+                &*output_path
             } else {
-                generate_output_filename(&options.filename)
+                s = generate_output_filename(&options.filename, options.no_link);
+                &*s
             };
-            let mut compiler_process = Command::new("cc")
+            let mut command = Command::new("cc");
+
+            command
                 .arg("-x").arg("c")
                 .arg("-")
-                .arg("-o").arg(output_filename)
+                .arg("-o").arg(output_filename);
+            if options.no_link {
+                command.arg("-c");
+            }
+
+            let mut compiler_process = command
                 .stdin(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -121,10 +134,11 @@ fn compile_source<'source, W: Write>(compiler: &mut Compiler<'source>, definitio
     }
 }
 
-fn generate_output_filename(input_filename: &str) -> &str {
+fn generate_output_filename(input_filename: &str, no_link: bool) -> Box<str> {
+    let extension = if no_link { ".o" } else { "" };
     if input_filename.ends_with(".opus") {
-        &input_filename[..input_filename.len() - 5]
+        format!("{}{}", &input_filename[..input_filename.len() - 5], extension).into()
     } else {
-        "a.out"
+        "a.out".into()
     }
 }
