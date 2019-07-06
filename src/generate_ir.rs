@@ -282,7 +282,7 @@ impl<'source> IrGenerator<'source> {
                 self.innermost_loop_begin = old_innermost_loop_begin;
 
                 let else_branch = self.instructions.len();
-                let diverges = self.generate_ir_from_block(else_block) | is_infinite;
+                let diverges = self.generate_ir_from_block(else_block) | (is_infinite && new_break_instructions_to_insert.len() == 0);
                 let else_jump = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
 
