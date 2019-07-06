@@ -65,6 +65,7 @@ impl BinaryOperator {
 pub enum Expression<'source> {
     Integer(u64, bool, u8),
     Variable(&'source str),
+    VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
@@ -512,6 +513,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Mut => {
                 let subexpression = self.parse_atom()?;
                 Expression::MutableReference(subexpression)
+            },
+            Token::Var => {
+                let variable_name = self.parse_lowercase_identifier()?;
+                self.expect(&Token::Colon)?;
+                let type_expression = self.parse_expression()?;
+                Expression::VariableDefinition(variable_name, type_expression)
             },
             t => return Err(Error::UnexpectedToken(t)),
         };

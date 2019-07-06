@@ -302,12 +302,24 @@ impl<'source> IrGenerator<'source> {
                 self.instructions.push(Instruction::ConstantInteger(variable, i));
                 variable
             },
-            Expression::Variable(s) => {
-                if let Some(&variable) = self.locals.get(s) {
+            Expression::Variable(name) => {
+                if let Some(&variable) = self.locals.get(name) {
                     variable
                 } else {
-                    self.compiler.report_error(Error::UndefinedVariable(s));
+                    self.compiler.report_error(Error::UndefinedVariable(name));
                     self.generate_error()
+                }
+            },
+            Expression::VariableDefinition(name, ref type_expression) => {
+                if self.locals_stack.contains(&name) {
+                    self.compiler.report_error(Error::ShadowedName(name));
+                    self.generate_error()
+                } else {
+                    let typ = self.compiler.resolve_type(type_expression);
+                    let variable = self.new_variable(Variable { typ });
+                    self.locals_stack.push(name);
+                    self.locals.insert(name, variable);
+                    variable
                 }
             },
             Expression::Call(ref name, ref arguments) => {
@@ -448,6 +460,21 @@ impl<'source> IrGenerator<'source> {
                     }
                 } else {
                     self.compiler.report_error(Error::UndefinedVariable(s));
+                }
+            },
+            Expression::VariableDefinition(name, ref type_expression) => {
+                if self.locals_stack.contains(&name) {
+                    self.compiler.report_error(Error::ShadowedName(name));
+                } else {
+                    let typ = self.compiler.resolve_type(type_expression);
+                    let variable = self.new_variable(Variable { typ: typ.clone() });
+                    self.locals_stack.push(name);
+                    self.locals.insert(name, variable);
+                    return LvalueData {
+                        lvalue: Lvalue::Variable(variable),
+                        typ,
+                        mutable: true,
+                    }
                 }
             },
             Expression::Dereference(ref subexpression) => {
