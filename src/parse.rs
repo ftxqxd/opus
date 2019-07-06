@@ -17,6 +17,7 @@ pub enum Token<'source> {
     Minus,
     Asterisk,
     Slash,
+    Percent,
     At,
     Tilde,
     Integer(u64, bool, u8),
@@ -46,6 +47,7 @@ pub enum BinaryOperator {
     Minus,
     Times,
     Divide,
+    Modulo,
     Equals,
     LessThan,
     GreaterThan,
@@ -60,6 +62,7 @@ impl BinaryOperator {
             Token::Minus => Some(BinaryOperator::Minus),
             Token::Asterisk => Some(BinaryOperator::Times),
             Token::Slash => Some(BinaryOperator::Divide),
+            Token::Percent => Some(BinaryOperator::Modulo),
             Token::Equals => Some(BinaryOperator::Equals),
             Token::LessThan => Some(BinaryOperator::LessThan),
             Token::GreaterThan => Some(BinaryOperator::GreaterThan),
@@ -80,12 +83,14 @@ impl BinaryOperator {
             BinaryOperator::Minus => 30,
             BinaryOperator::Times => 31,
             BinaryOperator::Divide => 31,
+            BinaryOperator::Modulo => 31,
         }
     }
 
     pub fn is_arithmetic(&self) -> bool {
         match *self {
-            BinaryOperator::Plus | BinaryOperator::Minus | BinaryOperator::Times | BinaryOperator::Divide => true,
+            BinaryOperator::Plus | BinaryOperator::Minus
+            | BinaryOperator::Times | BinaryOperator::Divide | BinaryOperator::Modulo => true,
             _ => false,
         }
     }
@@ -359,6 +364,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('-') => Ok(Token::Minus),
             Some('*') => Ok(Token::Asterisk),
             Some('/') => Ok(Token::Slash),
+            Some('%') => Ok(Token::Percent),
             Some('@') => Ok(Token::At),
             Some('~') => Ok(Token::Tilde),
             Some(c @ '0'..= '9') => {
