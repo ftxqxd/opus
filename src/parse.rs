@@ -7,8 +7,12 @@ pub enum Token<'source> {
     LeftParenthesis,
     RightParenthesis,
     Colon,
-    Equals,
     ColonEquals,
+    Equals,
+    LessThan,
+    GreaterThan,
+    LessThanEquals,
+    GreaterThanEquals,
     Plus,
     Minus,
     Asterisk,
@@ -43,6 +47,10 @@ pub enum BinaryOperator {
     Times,
     Divide,
     Equals,
+    LessThan,
+    GreaterThan,
+    LessThanEquals,
+    GreaterThanEquals,
 }
 
 impl BinaryOperator {
@@ -53,6 +61,10 @@ impl BinaryOperator {
             Token::Asterisk => Some(BinaryOperator::Times),
             Token::Slash => Some(BinaryOperator::Divide),
             Token::Equals => Some(BinaryOperator::Equals),
+            Token::LessThan => Some(BinaryOperator::LessThan),
+            Token::GreaterThan => Some(BinaryOperator::GreaterThan),
+            Token::LessThanEquals => Some(BinaryOperator::LessThanEquals),
+            Token::GreaterThanEquals => Some(BinaryOperator::GreaterThanEquals),
             _ => None,
         }
     }
@@ -60,6 +72,10 @@ impl BinaryOperator {
     fn precedence(&self) -> Precedence {
         match *self {
             BinaryOperator::Equals => 20,
+            BinaryOperator::LessThan => 20,
+            BinaryOperator::GreaterThan => 20,
+            BinaryOperator::LessThanEquals => 20,
+            BinaryOperator::GreaterThanEquals => 20,
             BinaryOperator::Plus => 30,
             BinaryOperator::Minus => 30,
             BinaryOperator::Times => 31,
@@ -76,7 +92,9 @@ impl BinaryOperator {
 
     pub fn is_comparison(&self) -> bool {
         match *self {
-            BinaryOperator::Equals => true,
+            BinaryOperator::Equals
+            | BinaryOperator::LessThan | BinaryOperator::GreaterThan
+            | BinaryOperator::LessThanEquals | BinaryOperator::GreaterThanEquals => true,
             _ => false,
         }
     }
@@ -315,19 +333,37 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         self.advance();
                         Ok(Token::ColonEquals)
                     },
-                    _ => Ok(Token::Colon)
+                    _ => Ok(Token::Colon),
                 }
             },
             Some('=') => Ok(Token::Equals),
+            Some('<') => {
+                match self.peek() {
+                    Some('=') => {
+                        self.advance();
+                        Ok(Token::LessThanEquals)
+                    },
+                    _ => Ok(Token::LessThan),
+                }
+            },
+            Some('>') => {
+                match self.peek() {
+                    Some('=') => {
+                        self.advance();
+                        Ok(Token::GreaterThanEquals)
+                    },
+                    _ => Ok(Token::GreaterThan),
+                }
+            },
             Some('+') => Ok(Token::Plus),
             Some('-') => Ok(Token::Minus),
             Some('*') => Ok(Token::Asterisk),
             Some('/') => Ok(Token::Slash),
             Some('@') => Ok(Token::At),
             Some('~') => Ok(Token::Tilde),
-            Some(c @ '0'..='9') => {
+            Some(c @ '0'..= '9') => {
                 let mut i = c as u64 - '0' as u64;
-                while let Some(c @ '0'..='9') = self.peek() {
+                while let Some(c @ '0'..= '9') = self.peek() {
                     self.advance();
                     i *= 10;
                     i += c as u64 - '0' as u64;
@@ -354,11 +390,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                                 self.advance();
                                 64
                             },
-                            (Some(a @ '0'..='9'), Some(b @ '0'..='9')) => {
+                            (Some(a @ '0'..= '9'), Some(b @ '0'..= '9')) => {
                                 let size = (a as u32 - '0' as u32) * 10 + b as u32 - '0' as u32;
                                 return Err(Error::InvalidNumericSize(size))
                             },
-                            (Some(a @ '0'..='9'), _) => {
+                            (Some(a @ '0'..= '9'), _) => {
                                 let size = a as u32 - '0' as u32;
                                 return Err(Error::InvalidNumericSize(size))
                             },
@@ -369,7 +405,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 };
                 Ok(Token::Integer(i, signed, size))
             },
-            Some(c @ 'A'..='Z') | Some(c @ '\'') => {
+            Some(c @ 'A'..= 'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
                     if c.is_alphanumeric() || c == '\'' || c == '_' {
@@ -381,7 +417,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 }
                 Ok(Token::UppercaseIdentifier(&self.source[old_position..old_position + byte_len]))
             },
-            Some(c @ 'a'..='z') | Some(c @ '_') => {
+            Some(c @ 'a'..= 'z') | Some(c @ '_') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
                     if c.is_alphanumeric() || c == '\'' || c == '_' {

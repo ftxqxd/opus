@@ -18,6 +18,10 @@ pub enum Instruction<'source> {
     Multiply(VariableId, VariableId, VariableId),
     Divide(VariableId, VariableId, VariableId),
     Equals(VariableId, VariableId, VariableId),
+    LessThan(VariableId, VariableId, VariableId),
+    GreaterThan(VariableId, VariableId, VariableId),
+    LessThanEquals(VariableId, VariableId, VariableId),
+    GreaterThanEquals(VariableId, VariableId, VariableId),
 
     Negate(VariableId, VariableId),
     Reference(VariableId, Lvalue),
@@ -412,6 +416,10 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::Times => Instruction::Multiply,
                     BinaryOperator::Divide => Instruction::Divide,
                     BinaryOperator::Equals => Instruction::Equals,
+                    BinaryOperator::LessThan => Instruction::LessThan,
+                    BinaryOperator::GreaterThan => Instruction::GreaterThan,
+                    BinaryOperator::LessThanEquals => Instruction::LessThanEquals,
+                    BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
                 };
                 let output_variable = self.new_variable(Variable { typ: output_type, is_temporary: true });
                 self.instructions.push(operation(output_variable, left_variable, right_variable));
@@ -587,6 +595,10 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Equals(variable1, variable2, variable3) => write!(f, "%{} = equals %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::LessThan(variable1, variable2, variable3) => write!(f, "%{} = lessthan %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::GreaterThan(variable1, variable2, variable3) => write!(f, "%{} = greaterthan %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::LessThanEquals(variable1, variable2, variable3) => write!(f, "%{} = lessthanequals %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::GreaterThanEquals(variable1, variable2, variable3) => write!(f, "%{} = greaterthanequals %{}, %{}", variable1, variable2, variable3)?,
 
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
                 Instruction::Reference(variable1, ref lvalue) => write!(f, "%{} = reference %{:?}", variable1, lvalue)?,
