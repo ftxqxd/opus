@@ -18,6 +18,7 @@ pub enum Instruction<'source> {
 
     Negate(VariableId, VariableId),
     Reference(VariableId, Lvalue),
+    MutableReference(VariableId, Lvalue),
     Dereference(VariableId, VariableId),
 
     Cast(VariableId, VariableId),
@@ -367,10 +368,25 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Reference(ref subexpression) => {
                 let LvalueData { lvalue, typ, .. } = self.generate_ir_from_lvalue(subexpression);
-                let output_variable = Variable { typ: Type::Pointer(Box::new(typ)) };
+                let output_variable = Variable { typ: Type::Reference(Box::new(typ)) };
                 let output_index = self.new_variable(output_variable);
 
                 self.instructions.push(Instruction::Reference(output_index, lvalue));
+
+                output_index
+            },
+            Expression::MutableReference(ref subexpression) => {
+                let LvalueData { lvalue, typ, mutable } = self.generate_ir_from_lvalue(subexpression);
+
+                if !mutable {
+                    let span = self.compiler.expression_span(subexpression);
+                    self.compiler.report_error(Error::ImmutableLvalue(span));
+                }
+
+                let output_variable = Variable { typ: Type::MutableReference(Box::new(typ)) };
+                let output_index = self.new_variable(output_variable);
+
+                self.instructions.push(Instruction::MutableReference(output_index, lvalue));
 
                 output_index
             },
@@ -378,7 +394,13 @@ impl<'source> IrGenerator<'source> {
                 let index = self.generate_ir_from_expression(subexpression);
                 let variable = &self.variables[index];
 
-                if let Type::Pointer(ref subtype) = variable.typ {
+                if let Type::Reference(ref subtype) = variable.typ {
+                    let output_variable = Variable { typ: (**subtype).clone() };
+                    let output_index = self.new_variable(output_variable);
+
+                    self.instructions.push(Instruction::Dereference(output_index, index));
+                    output_index
+                } else if let Type::MutableReference(ref subtype) = variable.typ {
                     let output_variable = Variable { typ: (**subtype).clone() };
                     let output_index = self.new_variable(output_variable);
 
@@ -432,11 +454,17 @@ impl<'source> IrGenerator<'source> {
                 let index = self.generate_ir_from_expression(subexpression);
                 let variable = &self.variables[index];
 
-                if let Type::Pointer(ref subtype) = variable.typ {
+                if let Type::Reference(ref subtype) = variable.typ {
                     return LvalueData {
                         lvalue: Lvalue::Dereference(index),
                         typ: (**subtype).clone(),
                         mutable: false,
+                    }
+                } else if let Type::MutableReference(ref subtype) = variable.typ {
+                    return LvalueData {
+                        lvalue: Lvalue::Dereference(index),
+                        typ: (**subtype).clone(),
+                        mutable: true,
                     }
                 } else {
                     self.compiler.report_error(Error::InvalidOperandType { span, typ: variable.typ.clone() });
@@ -486,6 +514,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
 
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
                 Instruction::Reference(variable1, ref lvalue) => write!(f, "%{} = reference %{:?}", variable1, lvalue)?,
+                Instruction::MutableReference(variable1, ref lvalue) => write!(f, "%{} = mutablereference %{:?}", variable1, lvalue)?,
                 // FIXME: impl Display for Lvalue
                 Instruction::Dereference(variable1, variable2) => write!(f, "%{} = dereference %{}", variable1, variable2)?,
 

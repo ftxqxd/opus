@@ -24,7 +24,8 @@ pub enum Type {
     Natural32,
     Natural64,
     Null,
-    Pointer(Box<Type>),
+    Reference(Box<Type>),
+    MutableReference(Box<Type>),
     Error,
 }
 
@@ -153,7 +154,8 @@ impl<'source> Compiler<'source> {
             Expression::Variable("nat32") => Type::Natural32,
             Expression::Variable("nat64") => Type::Natural64,
             Expression::Variable("null") => Type::Null,
-            Expression::Reference(ref subexpression) => Type::Pointer(Box::new(self.resolve_type(subexpression))),
+            Expression::Reference(ref subexpression) => Type::Reference(Box::new(self.resolve_type(subexpression))),
+            Expression::MutableReference(ref subexpression) => Type::MutableReference(Box::new(self.resolve_type(subexpression))),
             _ => Type::Error,
         }
     }

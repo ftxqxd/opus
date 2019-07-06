@@ -104,8 +104,12 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type
         Type::Natural32 => write!(output, "uint32_t"),
         Type::Natural64 => write!(output, "uint64_t"),
         Type::Null => write!(output, "_opust_null"),
-        Type::Pointer(ref subtype) => {
+        Type::Reference(ref subtype) => {
             write!(output, "const ")?;
+            translate_type_to_c(compiler, output, subtype)?;
+            write!(output, " *")
+        },
+        Type::MutableReference(ref subtype) => {
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " *")
         },
@@ -142,7 +146,8 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
 
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
-        Instruction::Reference(destination, ref lvalue) => {
+        Instruction::Reference(destination, ref lvalue)
+        | Instruction::MutableReference(destination, ref lvalue) => {
             write!(output, "var{} = &", destination)?;
             translate_lvalue_to_c(ir, output, lvalue)?;
             writeln!(output, ";")?;
@@ -211,6 +216,7 @@ fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Re
 }
 
 fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
+    // FIXME: mangling is just terrible.
     match *typ {
         Type::Integer8 => write!(output, "int8"),
         Type::Integer16 => write!(output, "int16"),
@@ -221,8 +227,12 @@ fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
         Type::Natural32 => write!(output, "nat32"),
         Type::Natural64 => write!(output, "nat64"),
         Type::Null => write!(output, "null"),
-        Type::Pointer(ref subtype) => {
-            write!(output, "PointerTo")?;
+        Type::Reference(ref subtype) => {
+            write!(output, "ReferenceTo")?;
+            mangle_type_name(subtype, output)
+        },
+        Type::MutableReference(ref subtype) => {
+            write!(output, "MutableReferenceTo")?;
             mangle_type_name(subtype, output)
         },
         Type::Error => write!(output, "error"),

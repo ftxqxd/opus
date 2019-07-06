@@ -12,7 +12,6 @@ pub enum Token<'source> {
     Minus,
     Asterisk,
     Slash,
-    Caret,
     At,
     Tilde,
     Integer(u64, bool, u8),
@@ -28,6 +27,8 @@ pub enum Token<'source> {
     Break,
     Continue,
     Extern,
+    Ref,
+    Mut,
     EndOfFile,
 }
 
@@ -67,6 +68,7 @@ pub enum Expression<'source> {
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
+    MutableReference(Box<Expression<'source>>),
     Dereference(Box<Expression<'source>>),
     Negate(Box<Expression<'source>>),
 }
@@ -288,7 +290,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('-') => Ok(Token::Minus),
             Some('*') => Ok(Token::Asterisk),
             Some('/') => Ok(Token::Slash),
-            Some('^') => Ok(Token::Caret),
             Some('@') => Ok(Token::At),
             Some('~') => Ok(Token::Tilde),
             Some(c @ '0'...'9') => {
@@ -367,6 +368,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "break" => Ok(Token::Break),
                     "continue" => Ok(Token::Continue),
                     "extern" => Ok(Token::Extern),
+                    "ref" => Ok(Token::Ref),
+                    "mut" => Ok(Token::Mut),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -502,6 +505,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let subexpression = self.parse_atom()?;
                 Expression::Negate(subexpression)
             },
+            Token::Ref => {
+                let subexpression = self.parse_atom()?;
+                Expression::Reference(subexpression)
+            },
+            Token::Mut => {
+                let subexpression = self.parse_atom()?;
+                Expression::MutableReference(subexpression)
+            },
             t => return Err(Error::UnexpectedToken(t)),
         };
 
@@ -510,11 +521,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
         loop {
             match self.peek_token()? {
-                Token::Caret => {
-                    let _ = self.parse_token();
-                    expression_box = Box::new(Expression::Reference(expression_box));
-                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
-                },
                 Token::At => {
                     let _ = self.parse_token();
                     expression_box = Box::new(Expression::Dereference(expression_box));
