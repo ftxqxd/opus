@@ -73,8 +73,9 @@ pub enum Expression<'source> {
 
 #[derive(Debug)]
 pub enum Statement<'source> {
-    VariableDefinition(&'source str, Box<Expression<'source>>),
     Expression(Box<Expression<'source>>),
+    VariableDefinition(&'source str, Box<Expression<'source>>),
+    Assignment(Box<Expression<'source>>, Box<Expression<'source>>),
     Return(Box<Expression<'source>>),
     If(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
     While(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
@@ -569,7 +570,19 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 Statement::Continue
             },
-            _ => Statement::Expression(self.parse_expression()?),
+            _ => {
+                let expression = self.parse_expression()?;
+
+                match self.peek_token()? {
+                    Token::Equals => {
+                        // Assignment expression `a = b`
+                        let _ = self.parse_token();
+                        let right = self.parse_expression()?;
+                        Statement::Assignment(expression, right)
+                    },
+                    _ => Statement::Expression(expression),
+                }
+            }
         };
 
         let boxed_statement = Box::new(statement);

@@ -9,6 +9,8 @@ pub enum Instruction<'source> {
     ConstantInteger(VariableId, u64),
     Call(VariableId, &'source Function, Box<[VariableId]>),
 
+    Assign(Lvalue, VariableId),
+
     Add(VariableId, VariableId, VariableId),
     Subtract(VariableId, VariableId, VariableId),
     Multiply(VariableId, VariableId, VariableId),
@@ -34,6 +36,13 @@ pub enum Lvalue {
     Variable(VariableId),
     Dereference(VariableId),
     Error,
+}
+
+/// Contains an Lvalue as well as data about its type and whether it is mutable.
+struct LvalueData {
+    lvalue: Lvalue,
+    typ: Type,
+    mutable: bool,
 }
 
 type VariableId = usize;
@@ -169,6 +178,20 @@ impl<'source> IrGenerator<'source> {
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable);
                 }
+            },
+            Statement::Assignment(ref left, ref right) => {
+                let LvalueData { lvalue, typ, mutable } = self.generate_ir_from_lvalue(left);
+
+                if !mutable {
+                    let span = self.compiler.expression_span(left);
+                    self.compiler.report_error(Error::ImmutableLvalue(span));
+                }
+
+                let variable = self.generate_ir_from_expression(right);
+                let span = self.compiler.expression_span(right);
+                let return_variable = self.autocast_variable_to_type(variable, &typ, span);
+
+                self.instructions.push(Instruction::Assign(lvalue, return_variable));
             },
             Statement::Return(ref expression) => {
                 let return_variable = self.generate_ir_from_expression(expression);
@@ -343,7 +366,7 @@ impl<'source> IrGenerator<'source> {
                 output_variable
             },
             Expression::Reference(ref subexpression) => {
-                let (lvalue, typ) = self.generate_ir_from_lvalue(subexpression);
+                let LvalueData { lvalue, typ, .. } = self.generate_ir_from_lvalue(subexpression);
                 let output_variable = Variable { typ: Type::Pointer(Box::new(typ)) };
                 let output_index = self.new_variable(output_variable);
 
@@ -390,13 +413,17 @@ impl<'source> IrGenerator<'source> {
         }
     }
 
-    fn generate_ir_from_lvalue(&mut self, expression: &'source Expression<'source>) -> (Lvalue, Type) {
+    fn generate_ir_from_lvalue(&mut self, expression: &'source Expression<'source>) -> LvalueData {
         let span = self.compiler.expression_span(expression);
         match *expression {
             Expression::Variable(s) => {
                 if let Some(&variable) = self.locals.get(s) {
                     let typ = self.variables[variable].typ.clone();
-                    return (Lvalue::Variable(variable), typ)
+                    return LvalueData {
+                        lvalue: Lvalue::Variable(variable),
+                        typ,
+                        mutable: true,
+                    }
                 } else {
                     self.compiler.report_error(Error::UndefinedVariable(s));
                 }
@@ -406,7 +433,11 @@ impl<'source> IrGenerator<'source> {
                 let variable = &self.variables[index];
 
                 if let Type::Pointer(ref subtype) = variable.typ {
-                    return (Lvalue::Dereference(index), (**subtype).clone())
+                    return LvalueData {
+                        lvalue: Lvalue::Dereference(index),
+                        typ: (**subtype).clone(),
+                        mutable: false,
+                    }
                 } else {
                     self.compiler.report_error(Error::InvalidOperandType { span, typ: variable.typ.clone() });
                 }
@@ -415,7 +446,7 @@ impl<'source> IrGenerator<'source> {
                 self.compiler.report_error(Error::InvalidLvalue(span));
             },
         }
-        (Lvalue::Error, Type::Error)
+        LvalueData { lvalue: Lvalue::Error, typ: Type::Error, mutable: true }
     }
 }
 
@@ -444,6 +475,9 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                         write!(f, ", {}", argument)?;
                     }
                 },
+
+                // FIXME: impl Display for Lvalue
+                Instruction::Assign(ref lvalue, variable) => write!(f, "{:?} = %{}", lvalue, variable)?,
 
                 Instruction::Add(variable1, variable2, variable3) => write!(f, "%{} = add %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,

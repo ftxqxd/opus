@@ -131,6 +131,11 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
             writeln!(output, ");")?;
         },
 
+        Instruction::Assign(ref lvalue, variable) => {
+            translate_lvalue_to_c(ir, output, lvalue)?;
+            writeln!(output, " = var{};", variable)?;
+        },
+
         Instruction::Add(destination, left, right) => writeln!(output, "var{} = var{} + var{};", destination, left, right)?,
         Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
         Instruction::Multiply(destination, left, right) => writeln!(output, "var{} = var{} * var{};", destination, left, right)?,

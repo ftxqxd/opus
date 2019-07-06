@@ -77,6 +77,7 @@ pub enum Error<'source> {
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
     InvalidLvalue(&'source str),
+    ImmutableLvalue(&'source str),
 }
 
 impl Type {
