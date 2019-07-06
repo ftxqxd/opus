@@ -293,9 +293,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('/') => Ok(Token::Slash),
             Some('@') => Ok(Token::At),
             Some('~') => Ok(Token::Tilde),
-            Some(c @ '0'...'9') => {
+            Some(c @ '0'..='9') => {
                 let mut i = c as u64 - '0' as u64;
-                while let Some(c @ '0'...'9') = self.peek() {
+                while let Some(c @ '0'..='9') = self.peek() {
                     self.advance();
                     i *= 10;
                     i += c as u64 - '0' as u64;
@@ -322,11 +322,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                                 self.advance();
                                 64
                             },
-                            (Some(a @ '0'...'9'), Some(b @ '0'...'9')) => {
+                            (Some(a @ '0'..='9'), Some(b @ '0'..='9')) => {
                                 let size = (a as u32 - '0' as u32) * 10 + b as u32 - '0' as u32;
                                 return Err(Error::InvalidNumericSize(size))
                             },
-                            (Some(a @ '0'...'9'), _) => {
+                            (Some(a @ '0'..='9'), _) => {
                                 let size = a as u32 - '0' as u32;
                                 return Err(Error::InvalidNumericSize(size))
                             },
@@ -337,7 +337,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 };
                 Ok(Token::Integer(i, signed, size))
             },
-            Some(c @ 'A'...'Z') | Some(c @ '\'') => {
+            Some(c @ 'A'..='Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
                     if c.is_alphanumeric() || c == '\'' || c == '_' {
@@ -349,7 +349,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 }
                 Ok(Token::UppercaseIdentifier(&self.source[old_position..old_position + byte_len]))
             },
-            Some(c @ 'a'...'z') | Some(c @ '_') => {
+            Some(c @ 'a'..='z') | Some(c @ '_') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
                     if c.is_alphanumeric() || c == '\'' || c == '_' {
