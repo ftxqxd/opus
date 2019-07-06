@@ -469,6 +469,9 @@ impl<'source> IrGenerator<'source> {
                     }
                 }
             },
+            Expression::Parentheses(ref subexpression) => {
+                self.generate_ir_from_expression(subexpression)
+            },
         }
     }
 
@@ -521,6 +524,9 @@ impl<'source> IrGenerator<'source> {
                 } else {
                     self.compiler.report_error(Error::InvalidOperandType { span, typ: variable.typ.clone() });
                 }
+            },
+            Expression::Parentheses(ref subexpression) => {
+                return self.generate_ir_from_lvalue(subexpression)
             },
             _ => {
                 self.compiler.report_error(Error::InvalidLvalue(span));

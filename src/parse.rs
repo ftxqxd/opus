@@ -74,6 +74,7 @@ pub enum Expression<'source> {
     MutableReference(Box<Expression<'source>>),
     Dereference(Box<Expression<'source>>),
     Negate(Box<Expression<'source>>),
+    Parentheses(Box<Expression<'source>>),
 }
 
 #[derive(Debug)]
@@ -492,7 +493,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         Token::RightParenthesis => {
                             let _ = self.parse_token();
                             self.ignore_dents -= 1;
-                            break Expression::Call(function_ident.into(), args)
+                            break 
                         },
                         Token::UppercaseIdentifier(s) => {
                             let _ = self.parse_token();
@@ -503,6 +504,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                             function_ident.push(None);
                         },
                     }
+                }
+                if function_ident.len() == 1 && function_ident[0].is_none() {
+                    Expression::Parentheses(args.pop().unwrap())
+                } else {
+                    Expression::Call(function_ident.into(), args)
                 }
             },
             Token::Tilde => {
