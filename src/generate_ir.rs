@@ -577,10 +577,10 @@ impl<'source> IrGenerator<'source> {
 
 impl<'source> fmt::Display for IrGenerator<'source> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "{}", self.signature)?;
+        writeln!(f, "{}", self.function)?;
 
         for (i, variable) in self.variables.iter().enumerate() {
-            writeln!(f, "VAR %{}: {:?}", i, variable.typ)?;
+            writeln!(f, "VAR %{}: {}", i, variable.typ)?;
         }
 
         let mut first = true;
@@ -626,8 +626,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Cast(variable1, variable2) => {
                     let type1 = &self.variables[variable1].typ;
                     let type2 = &self.variables[variable2].typ;
-                    // FIXME: impl Display for Type
-                    write!(f, "%{} = cast [{:?} to {:?}] %{}", variable1, type1, type2, variable2)?;
+                    write!(f, "%{} = cast [{} to {}] %{}", variable1, type1, type2, variable2)?;
                 },
 
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,

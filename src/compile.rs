@@ -35,7 +35,7 @@ pub enum Type {
     Error,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function {
     pub name: Box<[Option<Box<str>>]>,
     pub arguments: Box<[Type]>,
@@ -59,8 +59,7 @@ impl fmt::Display for Function {
             match *part {
                 Some(ref x) => write!(formatter, "{}", x)?,
                 None => {
-                    // FIXME: implement Display for Type
-                    write!(formatter, ":{:?}", self.arguments[i])?;
+                    write!(formatter, ":{}", self.arguments[i])?;
                     i += 1;
                 },
             }
@@ -68,7 +67,9 @@ impl fmt::Display for Function {
             written_anything = true;
         }
 
-        write!(formatter, ")")
+        write!(formatter, ")")?;
+
+        write!(formatter, ": {}", self.return_type)
     }
 }
 
@@ -87,6 +88,7 @@ pub enum Error<'source> {
     InvalidLvalue(&'source str),
     ImmutableLvalue(&'source str),
     InvalidCast { span: &'source str, from: Type, to: Type },
+    InvalidExternFunctionName(&'source str, Function),
 }
 
 impl Type {
@@ -150,6 +152,34 @@ impl Type {
     }
 }
 
+impl fmt::Display for Type {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let string = match *self {
+            Type::Integer8 => "int8",
+            Type::Integer16 => "int16",
+            Type::Integer32 => "int32",
+            Type::Integer64 => "int64",
+            Type::Natural8 => "nat8",
+            Type::Natural16 => "nat16",
+            Type::Natural32 => "nat32",
+            Type::Natural64 => "nat64",
+            Type::Bool => "bool",
+            Type::Null => "null",
+            Type::Reference(ref subtype) => {
+                write!(formatter, "ref {}", subtype)?;
+                ""
+            },
+            Type::MutableReference(ref subtype) => {
+                write!(formatter, "mut {}", subtype)?;
+                ""
+            },
+            Type::Error => "<error>",
+        };
+
+        write!(formatter, "{}", string)
+    }
+}
+
 impl<'source> Compiler<'source> {
     pub fn with_options(options: Options, source: &'source str) -> Self {
         let mut resolution_map: HashMap<&FunctionName, _> = HashMap::new();
@@ -199,10 +229,6 @@ impl<'source> Compiler<'source> {
                 eprintln!("unexpected token: expected lowercase identifier, found {}", token);
                 print_span(self.source, span);
             },
-            ParseError(InvalidExternFunctionName(span, ref signature)) => {
-                eprintln!("invalid extern function signature: {}", signature);
-                print_span(self.source, span);
-            },
             ParseError(InvalidNumericSize(span, size)) => {
                 eprintln!("invalid numeric size: {}", size);
                 print_span(self.source, span);
@@ -220,18 +246,15 @@ impl<'source> Compiler<'source> {
                 print_span(self.source, span);
             },
             UnexpectedType { span, ref expected, ref found } => {
-                // FIXME: impl Display for Type
-                eprintln!("invalid type: expected {:?}, found {:?}", expected, found);
+                eprintln!("invalid type: expected {}, found {}", expected, found);
                 print_span(self.source, span);
             },
             InvalidOperandTypes { span, ref left, ref right } => {
-                // FIXME: impl Display for Type
-                eprintln!("invalid operand types: {:?}, {:?}", left, right);
+                eprintln!("invalid operand types: {}, {}", left, right);
                 print_span(self.source, span);
             },
             InvalidOperandType { span, ref typ } => {
-                // FIXME: impl Display for Type
-                eprintln!("invalid operand type: {:?}", typ);
+                eprintln!("invalid operand type: {}", typ);
                 print_span(self.source, span);
             },
             FunctionMightNotReturn(span) => {
@@ -255,8 +278,11 @@ impl<'source> Compiler<'source> {
                 print_span(self.source, span);
             },
             InvalidCast { span, ref from, ref to } => {
-                // FIXME: impl Display for Type
-                eprintln!("invalid cast: {:?} to {:?}", from, to);
+                eprintln!("invalid cast: {} to {}", from, to);
+                print_span(self.source, span);
+            },
+            InvalidExternFunctionName(span, ref signature) => {
+                eprintln!("invalid extern function signature: {}", signature);
                 print_span(self.source, span);
             },
         }
@@ -295,6 +321,16 @@ impl<'source> Compiler<'source> {
 
                 let function = Function { name, arguments, return_type, is_extern };
 
+                if is_extern
+                && (signature.name.len() == 0
+                    || !signature.name[1..].iter().all(|x| x.is_none())
+                    || signature.name[0].is_none()
+                    || signature.name[0].as_ref().unwrap().chars().next() != Some('\''))
+                {
+                    let span = self.definition_span(definition);
+                    self.report_error(Error::InvalidExternFunctionName(span, function.clone()));
+                }
+
                 self.resolution_map.insert(&signature.name, function);
             },
         }
@@ -306,5 +342,9 @@ impl<'source> Compiler<'source> {
 
     pub fn expression_span(&self, expression: &Expression<'source>) -> &'source str {
         self.expression_spans[&(expression as *const _)]
+    }
+
+    pub fn definition_span(&self, definition: &Definition<'source>) -> &'source str {
+        self.definition_spans[&(definition as *const _)]
     }
 }

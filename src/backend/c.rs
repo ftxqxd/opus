@@ -194,11 +194,6 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
 ///     _opus_Frobnicate__int_With__nat64.
 fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Result<()> {
     if function.is_extern {
-        debug_assert!(function.name.len() > 0);
-        debug_assert!(function.name[1..].iter().all(|x| x.is_none()));
-        debug_assert!(function.name[0].is_some());
-        debug_assert_eq!(function.name[0].as_ref().unwrap().chars().next(), Some('\''));
-
         write!(output, "{}", &function.name[0].as_ref().unwrap()[1..])?;
     } else {
         write!(output, "_opus")?;

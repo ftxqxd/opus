@@ -227,7 +227,7 @@ impl<'source> fmt::Display for FunctionNameDisplayer<'source> {
 }
 
 /// The full signature of a function (including argument names & types).
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
     pub name: Box<FunctionName<'source>>,
@@ -237,7 +237,7 @@ pub struct FunctionSignature<'source> {
     pub return_type: Box<Expression<'source>>,
 }
 
-impl<'source> fmt::Display for FunctionSignature<'source> {
+impl<'source> fmt::Debug for FunctionSignature<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         write!(formatter, "(")?;
 
@@ -272,7 +272,6 @@ pub enum Error<'source> {
     UnexpectedToken(&'source str, Token<'source>),
     ExpectedFoundToken { span: &'source str, expected: Token<'source>, found: Token<'source> },
     ExpectedLowercaseIdentifier(&'source str, Token<'source>),
-    InvalidExternFunctionName(&'source str, FunctionSignature<'source>),
     InvalidNumericSize(&'source str, u32),
 }
 
@@ -828,14 +827,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let signature = self.parse_function_signature()?;
                 span = &self.source[low..self.position];
-
-                if signature.name.len() == 0
-                || !signature.name[1..].iter().all(|x| x.is_none())
-                || signature.name[0].is_none()
-                || signature.name[0].as_ref().unwrap().chars().next() != Some('\'') {
-                    let span = &self.source[low..self.position];
-                    return Err(Error::InvalidExternFunctionName(span, signature))
-                }
 
                 Definition::Extern(signature)
             },
