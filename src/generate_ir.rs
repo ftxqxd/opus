@@ -47,6 +47,16 @@ pub enum Lvalue {
     Error,
 }
 
+impl fmt::Display for Lvalue {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Lvalue::Variable(variable) => write!(formatter, "%{}", variable),
+            Lvalue::Dereference(variable) => write!(formatter, "dereference %{}", variable),
+            Lvalue::Error => write!(formatter, "error"),
+        }
+    }
+}
+
 /// Contains an Lvalue as well as data about its type and whether it is mutable.
 struct LvalueData {
     lvalue: Lvalue,
@@ -597,14 +607,13 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
                 Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
                 Instruction::Call(destination, function, ref arguments) => {
-                    write!(f, "%{} = call @{}", destination, function)?;
+                    write!(f, "%{} = call ${}", destination, function)?;
                     for argument in arguments.iter() {
                         write!(f, ", {}", argument)?;
                     }
                 },
 
-                // FIXME: impl Display for Lvalue
-                Instruction::Assign(ref lvalue, variable) => write!(f, "{:?} = %{}", lvalue, variable)?,
+                Instruction::Assign(ref lvalue, variable) => write!(f, "{} = %{}", lvalue, variable)?,
 
                 Instruction::Add(variable1, variable2, variable3) => write!(f, "%{} = add %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,
@@ -618,9 +627,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::GreaterThanEquals(variable1, variable2, variable3) => write!(f, "%{} = greaterthanequals %{}, %{}", variable1, variable2, variable3)?,
 
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
-                Instruction::Reference(variable1, ref lvalue) => write!(f, "%{} = reference %{:?}", variable1, lvalue)?,
-                Instruction::MutableReference(variable1, ref lvalue) => write!(f, "%{} = mutablereference %{:?}", variable1, lvalue)?,
-                // FIXME: impl Display for Lvalue
+                Instruction::Reference(variable1, ref lvalue) => write!(f, "%{} = reference %{}", variable1, lvalue)?,
+                Instruction::MutableReference(variable1, ref lvalue) => write!(f, "%{} = mutablereference %{}", variable1, lvalue)?,
                 Instruction::Dereference(variable1, variable2) => write!(f, "%{} = dereference %{}", variable1, variable2)?,
 
                 Instruction::Cast(variable1, variable2) => {
