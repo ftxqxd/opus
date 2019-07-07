@@ -201,6 +201,31 @@ pub enum Definition<'source> {
 /// arguments are represented by `None`.
 pub type FunctionName<'source> = [Option<&'source str>];
 
+pub struct FunctionNameDisplayer<'source>(pub &'source FunctionName<'source>);
+
+impl<'source> fmt::Display for FunctionNameDisplayer<'source> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "(")?;
+
+        let mut written_anything = false;
+
+        for part in self.0.iter() {
+            if written_anything {
+                write!(formatter, " ")?;
+            }
+
+            match *part {
+                Some(x) => write!(formatter, "{}", x)?,
+                None => write!(formatter, "_")?,
+            }
+
+            written_anything = true;
+        }
+
+        write!(formatter, ")")
+    }
+}
+
 /// The full signature of a function (including argument names & types).
 #[derive(Debug, PartialEq)]
 pub struct FunctionSignature<'source> {

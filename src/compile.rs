@@ -1,7 +1,7 @@
 use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
-use crate::parse::{FunctionName, Definition, Expression, Statement};
+use crate::parse::{FunctionName, FunctionNameDisplayer, Definition, Expression, Statement};
 use crate::frontend::Options;
 
 #[derive(Debug)]
@@ -216,8 +216,7 @@ impl<'source> Compiler<'source> {
                 print_span(self.source, span);
             },
             UndefinedFunction(span, name) => {
-                // FIXME: impl Display for FunctionName
-                eprintln!("undefined function: {:?}", name);
+                eprintln!("undefined function: {}", FunctionNameDisplayer(name));
                 print_span(self.source, span);
             },
             UnexpectedType { span, ref expected, ref found } => {
