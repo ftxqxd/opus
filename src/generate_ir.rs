@@ -101,14 +101,16 @@ impl<'source> IrGenerator<'source> {
 
     fn generate_ir_from_function(&mut self, block: &'source Block<'source>) {
         // First, generate the argument values
+        let mut types = vec![];
         for &(_, ref type_expression) in &self.signature.arguments {
             let typ = self.compiler.resolve_type(type_expression);
+            types.push(typ.clone());
             self.new_variable(Variable { typ, is_temporary: true });
         }
 
         // Then generate argument *locals* that we can mutate etc.
-        for (argument_id, &(name, ref type_expression)) in self.signature.arguments.iter().enumerate() {
-            let typ = Type::MutableReference(Box::new(self.compiler.resolve_type(type_expression)));
+        for ((argument_id, &(name, _)), typ) in self.signature.arguments.iter().enumerate().zip(types.into_iter()) {
+            let typ = Type::MutableReference(Box::new(typ));
             let variable_id = self.new_variable(Variable { typ, is_temporary: false });
             self.instructions.push(Instruction::Allocate(variable_id));
             self.instructions.push(Instruction::Store(variable_id, argument_id));
@@ -484,24 +486,28 @@ impl<'source> IrGenerator<'source> {
                 if self.locals_stack.contains(&name) {
                     self.compiler.report_error(Error::ShadowedName(name));
                     self.generate_error()
-                } else {
+                } else if mutable {
                     let typ = self.compiler.resolve_type(type_expression);
                     let variable_id = self.new_variable(Variable { typ: Type::MutableReference(Box::new(typ)), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(variable_id));
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable_id);
-                    if mutable {
-                        variable_id
-                    } else {
-                        let typ = self.compiler.resolve_type(type_expression);
-                        let new_type = Type::Reference(Box::new(typ));
-                        let new_variable_id = self.new_variable(Variable {
-                            typ: new_type,
-                            is_temporary: true,
-                        });
-                        self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
-                        new_variable_id
-                    }
+
+                    variable_id
+                } else {
+                    let typ = self.compiler.resolve_type(type_expression);
+                    let variable_id = self.new_variable(Variable { typ: Type::MutableReference(Box::new(typ.clone())), is_temporary: false });
+                    self.instructions.push(Instruction::Allocate(variable_id));
+                    self.locals_stack.push(name);
+                    self.locals.insert(name, variable_id);
+
+                    let new_type = Type::Reference(Box::new(typ));
+                    let new_variable_id = self.new_variable(Variable {
+                        typ: new_type,
+                        is_temporary: true,
+                    });
+                    self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
+                    new_variable_id
                 }
             },
             Expression::Dereference(ref subexpression) => {

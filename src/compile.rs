@@ -89,6 +89,7 @@ pub enum Error<'source> {
     ImmutableLvalue(&'source str),
     InvalidCast { span: &'source str, from: Type, to: Type },
     InvalidExternFunctionName(&'source str, Function),
+    UndefinedType(&'source str),
 }
 
 impl Type {
@@ -285,6 +286,10 @@ impl<'source> Compiler<'source> {
                 eprintln!("invalid extern function signature: {}", signature);
                 print_span(self.source, span);
             },
+            UndefinedType(span) => {
+                eprintln!("undefined type: {}", span);
+                print_span(self.source, span);
+            },
         }
     }
 
@@ -302,7 +307,11 @@ impl<'source> Compiler<'source> {
             Expression::Null => Type::Null,
             Expression::Reference(ref subexpression) => Type::Reference(Box::new(self.resolve_type(subexpression))),
             Expression::MutableReference(ref subexpression) => Type::MutableReference(Box::new(self.resolve_type(subexpression))),
-            _ => Type::Error,
+            _ => {
+                let span = self.expression_span(typ);
+                self.report_error(Error::UndefinedType(span));
+                Type::Error
+            },
         }
     }
 
