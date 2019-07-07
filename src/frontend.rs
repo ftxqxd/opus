@@ -2,6 +2,7 @@ extern crate argparse;
 
 use std::io::{Read, Write};
 use std::fs;
+use std::path::Path;
 use std::process::{self, Command, Stdio};
 use argparse::{ArgumentParser, Store, StoreTrue};
 use crate::parse::{Parser, Definition};
@@ -46,7 +47,7 @@ pub fn main() {
             let output_filename = if let Some(ref output_path) = &options.output_path {
                 &*output_path
             } else {
-                s = generate_output_filename(&options.filename, options.no_link);
+                s = generate_output_path(&options.filename, options.no_link);
                 &*s
             };
             let mut command = Command::new("cc");
@@ -140,10 +141,13 @@ fn compile_source<'source, W: Write>(compiler: &mut Compiler<'source>, definitio
     }
 }
 
-fn generate_output_filename(input_filename: &str, no_link: bool) -> Box<str> {
+fn generate_output_path(input_filename: &str, no_link: bool) -> Box<str> {
+    let path = Path::new(input_filename);
+    let basename = path.file_name().unwrap().to_str().unwrap();
+
     let extension = if no_link { ".o" } else { "" };
-    if input_filename.ends_with(".opus") {
-        format!("{}{}", &input_filename[..input_filename.len() - 5], extension).into()
+    if basename.ends_with(".opus") {
+        format!("{}{}", &basename[..basename.len() - 5], extension).into()
     } else {
         "a.out".into()
     }
