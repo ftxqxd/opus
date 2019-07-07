@@ -4,7 +4,7 @@
 //! `generate_ir.rs`) and C code.
 
 use std::io::{self, Write};
-use crate::generate_ir::{IrGenerator, Instruction, Lvalue};
+use crate::generate_ir::{IrGenerator, Instruction};
 use crate::compile::{Function, Type, Compiler};
 
 /// Initialize C code generation by writing necessary `#include` statements, function prototypes,
@@ -82,14 +82,6 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
     write!(output, ")")
 }
 
-fn translate_lvalue_to_c<W: Write>(_ir: &IrGenerator, output: &mut W, lvalue: &Lvalue) -> io::Result<()> {
-    match *lvalue {
-        Lvalue::Variable(id) => write!(output, "var{}", id),
-        Lvalue::Dereference(id) => write!(output, "*var{}", id),
-        _ => Ok(()),
-    }
-}
-
 fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type) -> io::Result<()> {
     match *typ {
         Type::Integer8 => write!(output, "int8_t"),
@@ -103,9 +95,8 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type
         Type::Null => write!(output, "_opust_null"),
         Type::Bool => write!(output, "_opust_bool"),
         Type::Reference(ref subtype) => {
-            write!(output, "const ")?;
             translate_type_to_c(compiler, output, subtype)?;
-            write!(output, " *")
+            write!(output, " const *")
         },
         Type::MutableReference(ref subtype) => {
             translate_type_to_c(compiler, output, subtype)?;
@@ -135,10 +126,15 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
             writeln!(output, ");")?;
         },
 
-        Instruction::Assign(ref lvalue, variable) => {
-            translate_lvalue_to_c(ir, output, lvalue)?;
-            writeln!(output, " = var{};", variable)?;
+        Instruction::Allocate(destination) => {
+            writeln!(output, ";")?;
+            let typ = ir.get_lvalue_type(destination);
+            translate_type_to_c(&ir.compiler, output, typ)?;
+            writeln!(output, " storage{};", destination)?;
+            writeln!(output, "var{} = &storage{};", destination, destination)?;
         },
+        Instruction::Load(destination, source) => writeln!(output, "var{} = *var{};", destination, source)?,
+        Instruction::Store(destination, source) => writeln!(output, "*var{} = var{};", destination, source)?,
 
         Instruction::Add(destination, left, right) => writeln!(output, "var{} = var{} + var{};", destination, left, right)?,
         Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
@@ -152,13 +148,6 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::GreaterThanEquals(destination, left, right) => writeln!(output, "var{} = var{} >= var{};", destination, left, right)?,
 
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
-        Instruction::Reference(destination, ref lvalue)
-        | Instruction::MutableReference(destination, ref lvalue) => {
-            write!(output, "var{} = &", destination)?;
-            translate_lvalue_to_c(ir, output, lvalue)?;
-            writeln!(output, ";")?;
-        },
-        Instruction::Dereference(destination, value) => writeln!(output, "var{} = *var{};", destination, value)?,
 
         Instruction::Cast(destination, source) => {
             let type1 = &ir.variables[destination].typ;

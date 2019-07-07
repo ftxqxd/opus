@@ -63,7 +63,7 @@ pub fn main() {
                 .stdin(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
-                .expect("failed to spawn compiler process");
+                .expect("failed to spawn cc process");
 
             let mut stdin = compiler_process.stdin.as_mut().expect("failed to open cc stdin");
 
@@ -86,14 +86,17 @@ pub fn main() {
 
             compile_source(&mut compiler, &definitions, &mut stdin);
 
-            if !compiler_process.wait().unwrap().success() {
-                eprintln!("internal compiler error: cc exited with non-zero status");
-                process::exit(1)
-            }
-
+            let result = compiler_process.wait();
             let stderr = compiler_process.stderr.as_mut().expect("failed to open cc stderr");
             let mut err = String::new();
             stderr.read_to_string(&mut err).unwrap();
+
+            if !result.unwrap().success() {
+                eprintln!("internal compiler error: cc exited with non-zero status");
+                eprint!("{}", err);
+                process::exit(1)
+            }
+
             if err.len() != 0 {
                 eprintln!("cc emitted warnings:");
                 eprint!("{}", err);
