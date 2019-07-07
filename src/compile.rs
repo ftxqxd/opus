@@ -1,12 +1,13 @@
 use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
-use crate::parse::{FunctionName, FunctionNameDisplayer, Definition, Expression, Statement};
+use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement};
 use crate::frontend::Options;
 
 #[derive(Debug)]
 pub struct Compiler<'source> {
-    pub resolution_map: HashMap<&'source FunctionName<'source>, Function>,
+    pub name_resolution_map: HashMap<&'source FunctionName<'source>, Vec<Function>>,
+    pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, Function>,
     pub has_errors: Cell<bool>,
 
     pub expression_spans: HashMap<*const Expression<'source>, &'source str>,
@@ -18,7 +19,7 @@ pub struct Compiler<'source> {
     pub source: &'source str,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     Integer8,
     Integer16,
@@ -41,6 +42,43 @@ pub struct Function {
     pub arguments: Box<[Type]>,
     pub return_type: Type,
     pub is_extern: bool,
+}
+
+/// A function name together with its argument types.
+///
+/// This is used to identify which overloaded function to call.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FunctionIdentifier {
+    pub name: Box<[Option<Box<str>>]>,
+    pub arguments: Box<[Type]>,
+}
+
+impl fmt::Display for FunctionIdentifier {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "(")?;
+
+        let mut i = 0;
+
+        let mut written_anything = false;
+
+        for part in self.name.iter() {
+            if written_anything {
+                write!(formatter, " ")?;
+            }
+
+            match *part {
+                Some(ref x) => write!(formatter, "{}", x)?,
+                None => {
+                    write!(formatter, ":{}", self.arguments[i])?;
+                    i += 1;
+                },
+            }
+
+            written_anything = true;
+        }
+
+        write!(formatter, ")")
+    }
 }
 
 impl fmt::Display for Function {
@@ -78,7 +116,9 @@ pub enum Error<'source> {
     ParseError(crate::parse::Error<'source>),
     UndefinedVariable(&'source str),
     ShadowedName(&'source str),
-    UndefinedFunction(&'source str, &'source FunctionName<'source>),
+    UndefinedFunction(&'source str, FunctionIdentifier),
+    NoOverloadForFunction(&'source str, FunctionIdentifier),
+    AmbiguousOverload(&'source str, FunctionIdentifier),
     UnexpectedType { span: &'source str, expected: Type, found: Type },
     InvalidOperandTypes { span: &'source str, left: Type, right: Type },
     InvalidOperandType { span: &'source str, typ: Type },
@@ -183,17 +223,9 @@ impl fmt::Display for Type {
 
 impl<'source> Compiler<'source> {
     pub fn with_options(options: Options, source: &'source str) -> Self {
-        let mut resolution_map: HashMap<&FunctionName, _> = HashMap::new();
-        static PRINT_NAME: [Option<&'static str>; 2] = [Some("Print"), None];
-        let print_function = Function {
-            name: Box::new([Some("Print".into()), None]),
-            arguments: Box::new([Type::Integer64]),
-            return_type: Type::Null,
-            is_extern: false,
-        };
-        resolution_map.insert(&PRINT_NAME, print_function);
         Self {
-            resolution_map,
+            name_resolution_map: HashMap::new(),
+            signature_resolution_map: HashMap::new(),
             has_errors: Cell::new(false),
             expression_spans: HashMap::new(),
             statement_spans: HashMap::new(),
@@ -242,8 +274,16 @@ impl<'source> Compiler<'source> {
                 eprintln!("shadowed variable: {}", span);
                 print_span(self.source, span);
             },
-            UndefinedFunction(span, name) => {
-                eprintln!("undefined function: {}", FunctionNameDisplayer(name));
+            UndefinedFunction(span, ref identifier) => {
+                eprintln!("undefined function: {}", identifier);
+                print_span(self.source, span);
+            },
+            NoOverloadForFunction(span, ref identifier) => {
+                eprintln!("no matching overload for function: {}", identifier);
+                print_span(self.source, span);
+            },
+            AmbiguousOverload(span, ref identifier) => {
+                eprintln!("call to overloaded function is ambiguous: {}", identifier);
                 print_span(self.source, span);
             },
             UnexpectedType { span, ref expected, ref found } => {
@@ -318,8 +358,8 @@ impl<'source> Compiler<'source> {
     pub fn parse_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
             Definition::Function(ref signature, ..) | Definition::Extern(ref signature) => {
-                let name = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
-                let arguments = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
+                let name: Box<_> = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
+                let arguments: Box<_> = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
                 let return_type = self.resolve_type(&signature.return_type);
 
                 let is_extern = if let Definition::Extern(..) = *definition {
@@ -340,8 +380,75 @@ impl<'source> Compiler<'source> {
                     self.report_error(Error::InvalidExternFunctionName(span, function.clone()));
                 }
 
-                self.resolution_map.insert(&signature.name, function);
+                self.name_resolution_map.entry(&signature.name)
+                    .and_modify(|v| v.push(function.clone()))
+                    .or_insert_with(|| vec![function.clone()]);
+                self.signature_resolution_map.insert(signature, function);
             },
+        }
+    }
+
+    /// Look for a function with the given name that matches the given argument types.
+    ///
+    /// Because we have implicit typecasts like `mut T -> ref T`, this isn't as easy as it sounds:
+    /// sometimes multiple functions could be possible matches for the given argument types.  So we
+    /// need a strategy to decide which function to use, and when to declare that the situation is
+    /// too ambiguous and reject all options.  Such a strategy should have the following
+    /// properties:
+    ///
+    /// 1. Exact type matches always work: if the arguments have type `(mut T, mut U)` and there is
+    ///    a function with argument types `(mut T, mut U)`, then we should pick that function.
+    /// 2. If one argument has the same type in every matching function, it should never cause the
+    ///    algorithm to reject declare an ambiguity.  For instance, if we have two functions
+    ///    `(Format :T To :mut nat8)` and `(Format :U To :mut nat8)`, the `mut nat8` parameter
+    ///    should be able to be ignored as far as the matching strategy is concerned.
+    ///
+    /// This function employs the obvious algorithm that satisfies the above properties.
+    pub fn lookup_function(&self, span: &'source str, name: &'source FunctionName<'source>, argument_types: &[&Type]) -> Option<&Function> {
+        // FIXME(cleanup): this code isn't ideal and could probably be simplified & optimized
+        let function_identifier = FunctionIdentifier {
+            name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+            arguments: argument_types.iter().cloned().cloned().collect(),
+        };
+
+        if let Some(functions) = self.name_resolution_map.get(&name) {
+            let candidates: Box<[_]> = functions.iter()
+                // Can we autocast our parameters to match this function's types?
+                .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, y)| x.can_autocast_to(y))).collect();
+
+            if candidates.len() == 0 {
+                self.report_error(Error::NoOverloadForFunction(span, function_identifier));
+                return None
+            }
+
+            let candidate1 = &candidates[0];
+            let ignorable = candidates.iter().fold(
+                vec![true; argument_types.len()],
+                |mut x, candidate| {
+                    for i in 0..x.len() {
+                        x[i] &= candidate.arguments[i] == candidate1.arguments[i];
+                    }
+                    x
+                }
+            );
+
+            for function in candidates.iter() {
+                if function.arguments.iter()
+                    .zip(argument_types.iter())
+                    .enumerate()
+                    .filter(|&(i, _)| !ignorable[i])
+                    .all(|(_, (x, &y))| x == y)
+                {
+                    // We have a match!
+                    return Some(function)
+                }
+            }
+
+            self.report_error(Error::AmbiguousOverload(span, function_identifier));
+            None
+        } else {
+            self.report_error(Error::UndefinedFunction(span, function_identifier));
+            None
         }
     }
 

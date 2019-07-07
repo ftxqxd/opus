@@ -79,7 +79,7 @@ impl<'source> IrGenerator<'source> {
             instructions: vec![],
             signature,
             span,
-            function: &compiler.resolution_map[&*signature.name],
+            function: &compiler.signature_resolution_map[&(signature as *const _)],
             break_instructions_to_insert: vec![],
             innermost_loop_begin: None,
             locals_stack: vec![],
@@ -353,8 +353,11 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Call(ref name, ref arguments) => {
                 let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
+                let argument_types: Box<[_]> = argument_variables.iter().map(|&x| &self.variables[x].typ).collect();
 
-                if let Some(function) = self.compiler.resolution_map.get(&**name) {
+                if argument_types.iter().any(|x| **x == Type::Error) {
+                    self.generate_error()
+                } else if let Some(function) = self.compiler.lookup_function(expression_span, name, &argument_types) {
                     debug_assert_eq!(function.arguments.len(), arguments.len());
 
                     for (i, (expected_type, &found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
@@ -366,7 +369,7 @@ impl<'source> IrGenerator<'source> {
                     self.instructions.push(Instruction::Call(variable, function, argument_variables.into()));
                     variable
                 } else {
-                    self.compiler.report_error(Error::UndefinedFunction(expression_span, name));
+                    // Compiler::lookup_function reports the error for us
                     self.generate_error()
                 }
             },

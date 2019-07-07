@@ -18,7 +18,7 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
     writeln!(output, "typedef uint8_t _opust_bool;")?;
 
     // Prototypes
-    for (_, function) in compiler.resolution_map.iter() {
+    for (_, function) in compiler.signature_resolution_map.iter() {
         translate_function_signature_to_c(compiler, function, output)?;
         writeln!(output, ";")?;
     }
