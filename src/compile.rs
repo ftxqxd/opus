@@ -14,6 +14,8 @@ pub struct Compiler<'source> {
     pub definition_spans: HashMap<*const Definition<'source>, &'source str>,
 
     pub options: Options,
+
+    pub source: &'source str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,7 +150,7 @@ impl Type {
 }
 
 impl<'source> Compiler<'source> {
-    pub fn with_options(options: Options) -> Self {
+    pub fn with_options(options: Options, source: &'source str) -> Self {
         let mut resolution_map: HashMap<&FunctionName, _> = HashMap::new();
         static PRINT_NAME: [Option<&'static str>; 2] = [Some("Print"), None];
         let print_function = Function {
@@ -165,12 +167,74 @@ impl<'source> Compiler<'source> {
             statement_spans: HashMap::new(),
             definition_spans: HashMap::new(),
             options,
+            source,
         }
     }
 
     pub fn report_error(&self, error: Error<'source>) {
-        eprintln!("{:?}", error);
+        self.print_error(&error);
         self.has_errors.set(true);
+    }
+
+    pub fn print_error(&self, error: &Error) {
+        use Error::*;
+        use crate::frontend::print_span;
+        eprint!("Error: ");
+        match *error {
+            UndefinedVariable(span) => {
+                eprintln!("undefined variable: {}", span);
+                print_span(self.source, span);
+            },
+            ShadowedName(span) => {
+                eprintln!("shadowed variable: {}", span);
+                print_span(self.source, span);
+            },
+            UndefinedFunction(span, name) => {
+                // FIXME: impl Display for FunctionName
+                eprintln!("undefined function: {:?}", name);
+                print_span(self.source, span);
+            },
+            UnexpectedType { span, ref expected, ref found } => {
+                // FIXME: impl Display for Type
+                eprintln!("invalid type: expected {:?}, found {:?}", expected, found);
+                print_span(self.source, span);
+            },
+            InvalidOperandTypes { span, ref left, ref right } => {
+                // FIXME: impl Display for Type
+                eprintln!("invalid operand types: {:?}, {:?}", left, right);
+                print_span(self.source, span);
+            },
+            InvalidOperandType { span, ref typ } => {
+                // FIXME: impl Display for Type
+                eprintln!("invalid operand type: {:?}", typ);
+                print_span(self.source, span);
+            },
+            FunctionMightNotReturn(span) => {
+                eprintln!("function might not return");
+                print_span(self.source, span);
+            },
+            BreakOutsideLoop(span) => {
+                eprintln!("break outside loop");
+                print_span(self.source, span);
+            },
+            ContinueOutsideLoop(span) => {
+                eprintln!("continue outside loop");
+                print_span(self.source, span);
+            },
+            InvalidLvalue(span) => {
+                eprintln!("invalid lvalue");
+                print_span(self.source, span);
+            },
+            ImmutableLvalue(span) => {
+                eprintln!("lvalue is immutable");
+                print_span(self.source, span);
+            },
+            InvalidCast { span, ref from, ref to } => {
+                // FIXME: impl Display for Type
+                eprintln!("invalid cast: {:?} to {:?}", from, to);
+                print_span(self.source, span);
+            },
+        }
     }
 
     pub fn resolve_type(&self, typ: &Expression) -> Type {

@@ -67,7 +67,7 @@ pub fn main() {
 
             let mut stdin = compiler_process.stdin.as_mut().expect("failed to open cc stdin");
 
-            let mut compiler = Compiler::with_options(options);
+            let mut compiler = Compiler::with_options(options, &source);
             let mut parser = Parser::from_source(&mut compiler, &source);
 
             let mut definitions = vec![];
@@ -130,7 +130,7 @@ fn compile_source<'source, W: Write>(compiler: &mut Compiler<'source>, definitio
     }
 
     if !translate {
-        panic!("compilation unsuccessful");
+        process::exit(1);
     }
 }
 
@@ -141,4 +141,54 @@ fn generate_output_filename(input_filename: &str, no_link: bool) -> Box<str> {
     } else {
         "a.out".into()
     }
+}
+
+pub fn print_span<'source>(source: &'source str, span: &'source str) {
+    let low = span as *const str as *const u8 as usize - source as *const str as *const u8 as usize;
+    debug_assert!(low <= source.len());
+    let high = low + span.len();
+
+    // Find the beginning and end of the line(s) containing this span as well as the line number
+    let mut line_low = 0;
+    let mut line_number = 1;
+    let mut position = 0;
+    for character in source[..low].chars() {
+        if position == low {
+            break
+        }
+        position += character.len_utf8();
+        if character == '\n' {
+            line_number += 1;
+            line_low = position;
+        }
+    }
+    let mut line_high = high;
+    for character in source[high..].chars() {
+        if character == '\n' {
+            break
+        }
+        line_high += character.len_utf8();
+    }
+
+    eprint!("\x1b[33m{:>4}:\x1b[0m ", line_number);
+    for i in line_low..line_high {
+        if i == low {
+            eprint!("\x1b[31;1m");
+        } else if i == high {
+            eprint!("\x1b[0m");
+        }
+        let c = source[i..].chars().next().unwrap();
+        match c {
+            '\t' => eprint!("        "),
+            '\n' => {
+                line_number += 1;
+                eprint!("\n\x1b[33m{:>4}:\x1b[0m ", line_number);
+                if i >= low && i < high {
+                    eprint!("\x1b[31;1m");
+                }
+            }
+            _ => eprint!("{}", c),
+        }
+    }
+    eprintln!("\x1b[0m");
 }
