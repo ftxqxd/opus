@@ -339,6 +339,17 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             self.advance();
         }
 
+        if let Some(';') = self.peek() {
+            // comment!
+            while let Some(c) = self.peek() {
+                if c == '\n' {
+                    break
+                }
+                self.advance();
+            }
+            return self.skip_whitespace()
+        }
+
         if self.source[self.real_position..].len() == 0 && !self.is_end_of_file {
             self.is_end_of_file = true;
             return -(self.indent as i32)
