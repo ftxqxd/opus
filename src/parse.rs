@@ -736,9 +736,34 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Var => {
                 let _ = self.parse_token();
                 let variable_name = self.parse_lowercase_identifier()?;
-                self.expect(&Token::ColonEquals)?;
-                let value = self.parse_expression()?;
-                Statement::VariableDefinition(variable_name, value)
+                match self.peek_token()? {
+                    Token::Colon => {
+                        let _ = self.parse_token();
+                        let typ = self.parse_expression()?;
+                        let left_span = &self.source[low..self.position];
+
+                        match self.peek_token()? {
+                            Token::ColonEquals => {
+                                let _ = self.parse_token();
+                                let value = self.parse_expression()?;
+
+                                let left = Box::new(Expression::VariableDefinition(variable_name, typ));
+                                self.compiler.expression_spans.insert(&*left, left_span);
+                                Statement::Assignment(left, value)
+                            },
+                            _ => {
+                                let expression = Box::new(Expression::VariableDefinition(variable_name, typ));
+                                self.compiler.expression_spans.insert(&*expression, left_span);
+                                Statement::Expression(expression)
+                            },
+                        }
+                    },
+                    _ => {
+                        self.expect(&Token::ColonEquals)?;
+                        let value = self.parse_expression()?;
+                        Statement::VariableDefinition(variable_name, value)
+                    },
+                }
             },
             Token::Return => {
                 let _ = self.parse_token();
