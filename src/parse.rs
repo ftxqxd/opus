@@ -43,6 +43,55 @@ pub enum Token<'source> {
     EndOfFile,
 }
 
+impl<'source> fmt::Display for Token<'source> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        use Token::*;
+        let buffer;
+        formatter.write_str(match *self {
+            LeftParenthesis => "(",
+            RightParenthesis => ")",
+            Colon => ":",
+            ColonEquals => ":=",
+            T_PAAMAYIM_NEKUDOTAYIM => "::",
+            Equals => "=",
+            LessThan => "<",
+            GreaterThan => ">",
+            LessThanEquals => "<=",
+            GreaterThanEquals => ">=",
+            Plus => "+",
+            Minus => "-",
+            Asterisk => "*",
+            Slash => "/",
+            Percent => "%",
+            At => "@",
+            Tilde => "~",
+            Integer(value, is_signed, size) => {
+                buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
+                &buffer
+            },
+            LowercaseIdentifier(s) => s,
+            UppercaseIdentifier(s) => s,
+            Indent => "<indent>",
+            Dedent => "<dedent>",
+            Var => "var",
+            Return => "return",
+            If => "if",
+            Else => "else",
+            While => "while",
+            Break => "break",
+            Continue => "continue",
+            Extern => "extern",
+            Ref => "ref",
+            Mut => "mut",
+            Null => "null",
+            False => "false",
+            True => "true",
+            EndOfFile => "<end of file>",
+        })?;
+        Ok(())
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum BinaryOperator {
     Plus,
@@ -194,12 +243,12 @@ impl<'source> fmt::Display for FunctionSignature<'source> {
 
 #[derive(Debug, PartialEq)]
 pub enum Error<'source> {
-    UnexpectedCharacter(char),
-    UnexpectedToken(Token<'source>),
-    ExpectedFoundToken { expected: Token<'source>, found: Token<'source> },
-    ExpectedLowercaseIdentifier(Token<'source>),
-    InvalidExternFunctionName(FunctionSignature<'source>),
-    InvalidNumericSize(u32),
+    UnexpectedCharacter(&'source str, char),
+    UnexpectedToken(&'source str, Token<'source>),
+    ExpectedFoundToken { span: &'source str, expected: Token<'source>, found: Token<'source> },
+    ExpectedLowercaseIdentifier(&'source str, Token<'source>),
+    InvalidExternFunctionName(&'source str, FunctionSignature<'source>),
+    InvalidNumericSize(&'source str, u32),
 }
 
 type Precedence = i8;
@@ -406,12 +455,15 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                                 64
                             },
                             (Some(a @ '0'..= '9'), Some(b @ '0'..= '9')) => {
+                                self.advance();
                                 let size = (a as u32 - '0' as u32) * 10 + b as u32 - '0' as u32;
-                                return Err(Error::InvalidNumericSize(size))
+                                let span = &self.source[old_position..self.real_position];
+                                return Err(Error::InvalidNumericSize(span, size))
                             },
                             (Some(a @ '0'..= '9'), _) => {
                                 let size = a as u32 - '0' as u32;
-                                return Err(Error::InvalidNumericSize(size))
+                                let span = &self.source[old_position..self.real_position];
+                                return Err(Error::InvalidNumericSize(span, size))
                             },
                             _ => { self.real_position = old_position; self.position = old_position; 32 },
                         }
@@ -460,9 +512,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
-            Some(c) => Err(Error::UnexpectedCharacter(c)),
+            Some(c) => Err(Error::UnexpectedCharacter(self.char_at(self.token_low), c)),
             None => Ok(Token::EndOfFile),
         }
+    }
+
+    fn char_at(&self, position: usize) -> &'source str {
+        let len = self.source[position..].chars().next().unwrap().len_utf8();
+        &self.source[position..position+len]
     }
 
     fn peek_token(&mut self) -> Result<'source, Token<'source>> {
@@ -476,7 +533,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     fn expect(&mut self, expected: &Token<'source>) -> Result<'source, ()> {
         let found = self.parse_token()?;
         if *expected != found {
-            return Err(Error::ExpectedFoundToken { expected: expected.clone(), found })
+            let span = &self.source[self.token_low..self.position];
+            return Err(Error::ExpectedFoundToken { span, expected: expected.clone(), found })
         }
 
         Ok(())
@@ -485,7 +543,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     fn parse_lowercase_identifier(&mut self) -> Result<'source, &'source str> {
         match self.parse_token()? {
             Token::LowercaseIdentifier(s) => Ok(s),
-            t => Err(Error::ExpectedLowercaseIdentifier(t))
+            t => {
+                let span = &self.source[self.token_low..self.position];
+                Err(Error::ExpectedLowercaseIdentifier(span, t))
+            },
         }
     }
 
@@ -620,7 +681,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::True => {
                 Expression::Bool(true)
             },
-            t => return Err(Error::UnexpectedToken(t)),
+            t => {
+                let span = &self.source[low..self.position];
+                return Err(Error::UnexpectedToken(span, t))
+            },
         };
 
         let mut expression_box = Box::new(expression);
@@ -744,7 +808,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 || !signature.name[1..].iter().all(|x| x.is_none())
                 || signature.name[0].is_none()
                 || signature.name[0].as_ref().unwrap().chars().next() != Some('\'') {
-                    return Err(Error::InvalidExternFunctionName(signature))
+                    let span = &self.source[low..self.position];
+                    return Err(Error::InvalidExternFunctionName(span, signature))
                 }
 
                 Definition::Extern(signature)
@@ -767,6 +832,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
         self.expect(&Token::LeftParenthesis)?;
+        let low = self.token_low;
 
         let mut name = vec![];
         let mut arguments = vec![];
@@ -784,7 +850,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     arguments.push((identifier, typ));
                 },
                 Token::RightParenthesis => break,
-                t => return Err(Error::UnexpectedToken(t)),
+                t => {
+                    let span = &self.source[low..self.position];
+                    return Err(Error::UnexpectedToken(span, t))
+                },
             }
         }
         self.ignore_dents -= 1;

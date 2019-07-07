@@ -6,7 +6,7 @@ use std::process::{self, Command, Stdio};
 use argparse::{ArgumentParser, Store, StoreTrue};
 use crate::parse::{Parser, Definition};
 use crate::generate_ir::IrGenerator;
-use crate::compile::Compiler;
+use crate::compile::{self, Compiler};
 use crate::backend::c;
 
 #[derive(Debug, Clone)]
@@ -77,7 +77,10 @@ pub fn main() {
                     Ok(d) => {
                         definitions.push(d);
                     },
-                    Err(e) => { eprintln!("error: {:?}", e); process::exit(1) },
+                    Err(e) => {
+                        compiler.report_error(compile::Error::ParseError(e));
+                        process::exit(1)
+                    },
                 }
             }
 

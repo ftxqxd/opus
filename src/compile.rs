@@ -74,6 +74,7 @@ impl fmt::Display for Function {
 
 #[derive(Debug)]
 pub enum Error<'source> {
+    ParseError(crate::parse::Error<'source>),
     UndefinedVariable(&'source str),
     ShadowedName(&'source str),
     UndefinedFunction(&'source str, &'source FunctionName<'source>),
@@ -179,8 +180,33 @@ impl<'source> Compiler<'source> {
     pub fn print_error(&self, error: &Error) {
         use Error::*;
         use crate::frontend::print_span;
+        use crate::parse::Error::*;
         eprint!("Error: ");
         match *error {
+            ParseError(UnexpectedCharacter(span, c)) => {
+                eprintln!("unexpected character: {}", c);
+                print_span(self.source, span);
+            },
+            ParseError(UnexpectedToken(span, ref token)) => {
+                eprintln!("unexpected token: {}", token);
+                print_span(self.source, span);
+            },
+            ParseError(ExpectedFoundToken { span, ref expected, ref found }) => {
+                eprintln!("unexpected token: expected {}, found {}", expected, found);
+                print_span(self.source, span);
+            },
+            ParseError(ExpectedLowercaseIdentifier(span, ref token)) => {
+                eprintln!("unexpected token: expected lowercase identifier, found {}", token);
+                print_span(self.source, span);
+            },
+            ParseError(InvalidExternFunctionName(span, ref signature)) => {
+                eprintln!("invalid extern function signature: {}", signature);
+                print_span(self.source, span);
+            },
+            ParseError(InvalidNumericSize(span, size)) => {
+                eprintln!("invalid numeric size: {}", size);
+                print_span(self.source, span);
+            },
             UndefinedVariable(span) => {
                 eprintln!("undefined variable: {}", span);
                 print_span(self.source, span);
