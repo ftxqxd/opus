@@ -20,6 +20,7 @@ pub enum Instruction<'source> {
     Multiply(VariableId, VariableId, VariableId),
     Divide(VariableId, VariableId, VariableId),
     Modulo(VariableId, VariableId, VariableId),
+    Offset(VariableId, VariableId, VariableId),
     Equals(VariableId, VariableId, VariableId),
     LessThan(VariableId, VariableId, VariableId),
     GreaterThan(VariableId, VariableId, VariableId),
@@ -380,6 +381,7 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::Times => Instruction::Multiply,
                     BinaryOperator::Divide => Instruction::Divide,
                     BinaryOperator::Modulo => Instruction::Modulo,
+                    BinaryOperator::Offset => Instruction::Offset,
                     BinaryOperator::Equals => Instruction::Equals,
                     BinaryOperator::LessThan => Instruction::LessThan,
                     BinaryOperator::GreaterThan => Instruction::GreaterThan,
@@ -409,7 +411,7 @@ impl<'source> IrGenerator<'source> {
                     (_, _) if type1 == type2 && type1.is_integral() && operator.is_arithmetic() => type1.clone(),
                     (_, _) if type1 == type2 && type1.is_integral() && operator.is_comparison() => Type::Bool,
                     (&Type::Reference(_), _) | (&Type::MutableReference(_), _)
-                        if type2.is_integral() && (operator == BinaryOperator::Plus || operator == BinaryOperator::Minus)
+                        if type2.is_integral() && operator == BinaryOperator::Offset
                       => type1.clone(),
                     (_, &Type::Error) | (&Type::Error, _) => Type::Error,
                     (_, _) => {
@@ -593,6 +595,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Modulo(variable1, variable2, variable3) => write!(f, "%{} = modulo %{}, %{}", variable1, variable2, variable3)?,
+                Instruction::Offset(variable1, variable2, variable3) => write!(f, "%{} = offset %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Equals(variable1, variable2, variable3) => write!(f, "%{} = equals %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::LessThan(variable1, variable2, variable3) => write!(f, "%{} = lessthan %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::GreaterThan(variable1, variable2, variable3) => write!(f, "%{} = greaterthan %{}, %{}", variable1, variable2, variable3)?,

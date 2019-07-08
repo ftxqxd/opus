@@ -20,6 +20,7 @@ pub enum Token<'source> {
     Asterisk,
     Slash,
     Percent,
+    PlusPlus,
     At,
     Tilde,
     Integer(u64, bool, u8),
@@ -51,7 +52,7 @@ impl<'source> fmt::Display for Token<'source> {
             LeftParenthesis => "(",
             RightParenthesis => ")",
             Colon => ":",
-            ColonEquals => ":=",
+            ColonEquals => "←",
             T_PAAMAYIM_NEKUDOTAYIM => "::",
             Equals => "=",
             LessThan => "<",
@@ -59,12 +60,13 @@ impl<'source> fmt::Display for Token<'source> {
             LessThanEquals => "<=",
             GreaterThanEquals => ">=",
             Plus => "+",
+            PlusPlus => "++",
             Minus => "-",
             Asterisk => "*",
             Slash => "/",
             Percent => "%",
             At => "@",
-            Tilde => "~",
+            Tilde => "¯",
             Integer(value, is_signed, size) => {
                 buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
                 &buffer
@@ -99,6 +101,7 @@ pub enum BinaryOperator {
     Times,
     Divide,
     Modulo,
+    Offset,
     Equals,
     LessThan,
     GreaterThan,
@@ -115,6 +118,7 @@ impl BinaryOperator {
             Token::Asterisk => Some(BinaryOperator::Times),
             Token::Slash => Some(BinaryOperator::Divide),
             Token::Percent => Some(BinaryOperator::Modulo),
+            Token::PlusPlus => Some(BinaryOperator::Offset),
             Token::Equals => Some(BinaryOperator::Equals),
             Token::LessThan => Some(BinaryOperator::LessThan),
             Token::GreaterThan => Some(BinaryOperator::GreaterThan),
@@ -134,6 +138,7 @@ impl BinaryOperator {
             BinaryOperator::GreaterThanEquals => 20,
             BinaryOperator::Plus => 30,
             BinaryOperator::Minus => 30,
+            BinaryOperator::Offset => 30,
             BinaryOperator::Times => 31,
             BinaryOperator::Divide => 31,
             BinaryOperator::Modulo => 31,
@@ -430,7 +435,15 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     _ => Ok(Token::GreaterThan),
                 }
             },
-            Some('+') => Ok(Token::Plus),
+            Some('+') => {
+                match self.peek() {
+                    Some('+') => {
+                        self.advance();
+                        Ok(Token::PlusPlus)
+                    },
+                    _ => Ok(Token::Plus),
+                }
+            },
             Some('-') => Ok(Token::Minus),
             Some('*') => Ok(Token::Asterisk),
             Some('/') => Ok(Token::Slash),
