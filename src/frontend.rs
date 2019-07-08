@@ -181,15 +181,15 @@ pub fn print_span<'source>(source: &'source str, span: &'source str) {
     }
 
     eprint!("\x1b[33m{:>4}:\x1b[0m ", line_number);
-    for i in line_low..line_high {
+    for (i, c) in source[line_low..line_high].char_indices() {
+        let i = line_low + i;
         if i == low {
             eprint!("\x1b[31;1m");
         } else if i == high {
             eprint!("\x1b[0m");
         }
-        let c = source[i..].chars().next().unwrap();
         match c {
-            '\t' => eprint!("        "),
+            '\t' => eprint!("    "),
             '\n' => {
                 line_number += 1;
                 eprint!("\n\x1b[33m{:>4}:\x1b[0m ", line_number);

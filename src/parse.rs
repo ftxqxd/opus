@@ -396,6 +396,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         match self.advance() {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
+            Some('←') => Ok(Token::ColonEquals),
+            Some('¯') => Ok(Token::Tilde),
             Some(':') => {
                 match self.peek() {
                     Some('=') => {
