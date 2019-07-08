@@ -172,11 +172,12 @@ impl<'source> IrGenerator<'source> {
 
     /// Return the type of the lvalue with the given ID.  The provided variable should always be of
     /// a reference type.
-    pub fn get_lvalue_type(&self, variable_id: VariableId) -> &Type {
+    pub fn get_lvalue_type(&self, variable_id: VariableId) -> Type {
         match self.variables[variable_id].typ {
-            Type::MutableReference(ref typ) => typ,
-            Type::Reference(ref typ) => typ,
-            _ => unreachable!(),
+            Type::MutableReference(ref typ) => (**typ).clone(),
+            Type::Reference(ref typ) => (**typ).clone(),
+            Type::Error => Type::Error,
+            ref typ => unreachable!("lvalue of type {:?}", typ),
         }
     }
 
@@ -205,7 +206,7 @@ impl<'source> IrGenerator<'source> {
 
                 let right_variable_id = self.generate_ir_from_expression(right);
                 let span = self.compiler.expression_span(right);
-                let left_variable_type = self.get_lvalue_type(left_variable_id).clone();
+                let left_variable_type = self.get_lvalue_type(left_variable_id);
                 let final_variable_id = self.autocast_variable_to_type(right_variable_id, &left_variable_type, span);
 
                 self.instructions.push(Instruction::Store(left_variable_id, final_variable_id));
@@ -220,13 +221,9 @@ impl<'source> IrGenerator<'source> {
                 return true
             },
             Statement::If(ref condition, ref then_block, ref else_block) => {
-                let mut condition_variable = self.generate_ir_from_expression(condition);
-                let typ = &self.variables[condition_variable].typ;
-                if *typ != Type::Bool {
-                    let span = self.compiler.expression_span(condition);
-                    self.compiler.report_error(Error::UnexpectedType { span, expected: Type::Bool, found: typ.clone() });
-                    condition_variable = self.generate_error();
-                }
+                let condition_variable = self.generate_ir_from_expression(condition);
+                let condition_span = self.compiler.expression_span(condition);
+                let condition_variable = self.autocast_variable_to_type(condition_variable, &Type::Bool, condition_span);
 
                 let mut diverges = true;
 
@@ -255,13 +252,9 @@ impl<'source> IrGenerator<'source> {
 
                 let is_infinite = if let Expression::Bool(true) = **condition { true } else { false };
 
-                let mut condition_variable = self.generate_ir_from_expression(condition);
-                let typ = &self.variables[condition_variable].typ;
-                if *typ != Type::Bool {
-                    let span = self.compiler.expression_span(condition);
-                    self.compiler.report_error(Error::UnexpectedType { span, expected: Type::Bool, found: typ.clone() });
-                    condition_variable = self.generate_error();
-                }
+                let condition_variable = self.generate_ir_from_expression(condition);
+                let condition_span = self.compiler.expression_span(condition);
+                let condition_variable = self.autocast_variable_to_type(condition_variable, &Type::Bool, condition_span);
 
                 let branch = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
@@ -344,7 +337,7 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..) => {
                 let pointer_variable_id = self.generate_pointer_from_expression(expression, false);
-                let typ = self.get_lvalue_type(pointer_variable_id).clone();
+                let typ = self.get_lvalue_type(pointer_variable_id);
                 let new_variable_id = self.new_variable(Variable {
                     typ,
                     is_temporary: true,
@@ -452,6 +445,9 @@ impl<'source> IrGenerator<'source> {
                         self.instructions.push(Instruction::Negate(output_index, sub_index));
                         output_index
                     },
+                    Type::Error => {
+                        self.generate_error()
+                    },
                     _ => {
                         self.compiler.report_error(Error::InvalidOperandType { span: expression_span, typ: sub_variable.typ.clone() });
                         self.generate_error()
@@ -474,7 +470,7 @@ impl<'source> IrGenerator<'source> {
                     if mutable {
                         variable_id
                     } else {
-                        let new_type = Type::Reference(Box::new(self.get_lvalue_type(variable_id).clone()));
+                        let new_type = Type::Reference(Box::new(self.get_lvalue_type(variable_id)));
                         let new_variable_id = self.new_variable(Variable {
                             typ: new_type,
                             is_temporary: true,
@@ -540,6 +536,9 @@ impl<'source> IrGenerator<'source> {
                         } else {
                             variable_id
                         }
+                    },
+                    Type::Error => {
+                        self.generate_error()
                     },
                     _ => {
                         self.compiler.report_error(Error::InvalidOperandType { span, typ: typ.clone() });

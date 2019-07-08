@@ -129,7 +129,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Allocate(destination) => {
             writeln!(output, ";")?;
             let typ = ir.get_lvalue_type(destination);
-            translate_type_to_c(&ir.compiler, output, typ)?;
+            translate_type_to_c(&ir.compiler, output, &typ)?;
             writeln!(output, " storage{};", destination)?;
             writeln!(output, "var{} = &storage{};", destination, destination)?;
         },
