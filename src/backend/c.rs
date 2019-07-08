@@ -5,7 +5,7 @@
 
 use std::io::{self, Write};
 use crate::generate_ir::{IrGenerator, Instruction};
-use crate::compile::{Function, Type, Compiler};
+use crate::compile::{Function, Type, TypeId, Compiler};
 
 /// Initialize C code generation by writing necessary `#include` statements, function prototypes,
 /// and the main function.
@@ -44,7 +44,7 @@ pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Resu
         }
 
         write!(output, "\t")?;
-        translate_type_to_c(&ir.compiler, output, &variable.typ)?;
+        translate_type_to_c(&ir.compiler, output, variable.typ)?;
         write!(output, " var{};\n", i)?;
     }
 
@@ -61,16 +61,16 @@ pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Resu
 
 fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &Function, output: &mut W) -> io::Result<()> {
     // Write return type
-    translate_type_to_c(compiler, output, &function.return_type)?;
+    translate_type_to_c(compiler, output, function.return_type)?;
     write!(output, " ")?;
-    mangle_function_name(function, output)?;
+    mangle_function_name(compiler, function, output)?;
     write!(output, "(")?;
     // Write argument types
     let mut written_anything = false;
     if function.arguments.len() == 0 {
         write!(output, "void")?;
     }
-    for (i, argument_type) in function.arguments.iter().enumerate() {
+    for (i, &argument_type) in function.arguments.iter().enumerate() {
         if written_anything {
             write!(output, ", ")?;
         }
@@ -82,8 +82,9 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
     write!(output, ")")
 }
 
-fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type) -> io::Result<()> {
-    match *typ {
+fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeId) -> io::Result<()> {
+    let type_info = compiler.resolve_type_id(typ);
+    match *type_info {
         Type::Integer8 => write!(output, "int8_t"),
         Type::Integer16 => write!(output, "int16_t"),
         Type::Integer32 => write!(output, "int32_t"),
@@ -94,11 +95,11 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: &Type
         Type::Natural64 => write!(output, "uint64_t"),
         Type::Null => write!(output, "_opust_null"),
         Type::Bool => write!(output, "_opust_bool"),
-        Type::Reference(ref subtype) => {
+        Type::Reference(subtype) => {
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " const *")
         },
-        Type::MutableReference(ref subtype) => {
+        Type::MutableReference(subtype) => {
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " *")
         },
@@ -115,7 +116,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Bool(destination, is_true) => writeln!(output, "var{} = {};", destination, if is_true { 1 } else { 0 })?,
         Instruction::Call(destination, function, ref arguments) => {
             write!(output, "var{} = ", destination)?;
-            mangle_function_name(function, output)?;
+            mangle_function_name(&ir.compiler, function, output)?;
             write!(output, "(")?;
             for (i, argument) in arguments.iter().enumerate() {
                 if i > 0 {
@@ -129,7 +130,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Allocate(destination) => {
             writeln!(output, ";")?;
             let typ = ir.get_lvalue_type(destination);
-            translate_type_to_c(&ir.compiler, output, &typ)?;
+            translate_type_to_c(&ir.compiler, output, typ)?;
             writeln!(output, " storage{};", destination)?;
             writeln!(output, "var{} = &storage{};", destination, destination)?;
         },
@@ -151,7 +152,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
 
         Instruction::Cast(destination, source) => {
-            let type1 = &ir.variables[destination].typ;
+            let type1 = ir.variables[destination].typ;
             write!(output, "var{} = (", destination)?;
             translate_type_to_c(&ir.compiler, output, type1)?;
             writeln!(output, ") var{};", source)?;
@@ -182,7 +183,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
 /// to names like
 ///
 ///     _opus_Frobnicate__int_With__nat64.
-fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Result<()> {
+fn mangle_function_name<W: Write>(compiler: &Compiler, function: &Function, output: &mut W) -> io::Result<()> {
     if function.is_extern {
         write!(output, "{}", &function.name[0].as_ref().unwrap()[1..])?;
     } else {
@@ -196,7 +197,7 @@ fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Re
                 },
                 None => {
                     write!(output, "__")?;
-                    mangle_type_name(&function.arguments[i], output)?;
+                    mangle_type_name(compiler, function.arguments[i], output)?;
                     i += 1;
                 },
             }
@@ -206,9 +207,10 @@ fn mangle_function_name<W: Write>(function: &Function, output: &mut W) -> io::Re
     Ok(())
 }
 
-fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
+fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) -> io::Result<()> {
     // FIXME: mangling is just terrible.
-    match *typ {
+    let type_info = compiler.resolve_type_id(typ);
+    match *type_info {
         Type::Integer8 => write!(output, "int8"),
         Type::Integer16 => write!(output, "int16"),
         Type::Integer32 => write!(output, "int32"),
@@ -219,13 +221,13 @@ fn mangle_type_name<W: Write>(typ: &Type, output: &mut W) -> io::Result<()> {
         Type::Natural64 => write!(output, "nat64"),
         Type::Null => write!(output, "null"),
         Type::Bool => write!(output, "bool"),
-        Type::Reference(ref subtype) => {
+        Type::Reference(subtype) => {
             write!(output, "ReferenceTo")?;
-            mangle_type_name(subtype, output)
+            mangle_type_name(compiler, subtype, output)
         },
-        Type::MutableReference(ref subtype) => {
+        Type::MutableReference(subtype) => {
             write!(output, "MutableReferenceTo")?;
-            mangle_type_name(subtype, output)
+            mangle_type_name(compiler, subtype, output)
         },
         Type::Error => write!(output, "error"),
     }

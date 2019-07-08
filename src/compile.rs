@@ -1,10 +1,10 @@
 use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
+use typed_arena::Arena;
 use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement};
 use crate::frontend::Options;
 
-#[derive(Debug)]
 pub struct Compiler<'source> {
     pub name_resolution_map: HashMap<&'source FunctionName<'source>, Vec<Function>>,
     pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, Function>,
@@ -17,6 +17,9 @@ pub struct Compiler<'source> {
     pub options: Options,
 
     pub source: &'source str,
+
+    type_map: Cell<HashMap<Type, TypeId>>,
+    type_arena: &'source Arena<Type>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -31,84 +34,26 @@ pub enum Type {
     Natural64,
     Bool,
     Null,
-    Reference(Box<Type>),
-    MutableReference(Box<Type>),
+    Reference(TypeId),
+    MutableReference(TypeId),
     Error,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: Box<[Option<Box<str>>]>,
-    pub arguments: Box<[Type]>,
-    pub return_type: Type,
+    pub arguments: Box<[TypeId]>,
+    pub return_type: TypeId,
     pub is_extern: bool,
 }
 
 /// A function name together with its argument types.
 ///
-/// This is used to identify which overloaded function to call.
+/// This is used for error messages.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FunctionIdentifier {
     pub name: Box<[Option<Box<str>>]>,
-    pub arguments: Box<[Type]>,
-}
-
-impl fmt::Display for FunctionIdentifier {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "(")?;
-
-        let mut i = 0;
-
-        let mut written_anything = false;
-
-        for part in self.name.iter() {
-            if written_anything {
-                write!(formatter, " ")?;
-            }
-
-            match *part {
-                Some(ref x) => write!(formatter, "{}", x)?,
-                None => {
-                    write!(formatter, ":{}", self.arguments[i])?;
-                    i += 1;
-                },
-            }
-
-            written_anything = true;
-        }
-
-        write!(formatter, ")")
-    }
-}
-
-impl fmt::Display for Function {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "(")?;
-
-        let mut i = 0;
-
-        let mut written_anything = false;
-
-        for part in self.name.iter() {
-            if written_anything {
-                write!(formatter, " ")?;
-            }
-
-            match *part {
-                Some(ref x) => write!(formatter, "{}", x)?,
-                None => {
-                    write!(formatter, ":{}", self.arguments[i])?;
-                    i += 1;
-                },
-            }
-
-            written_anything = true;
-        }
-
-        write!(formatter, ")")?;
-
-        write!(formatter, ": {}", self.return_type)
-    }
+    pub arguments: Box<[TypeId]>,
 }
 
 #[derive(Debug)]
@@ -119,15 +64,15 @@ pub enum Error<'source> {
     UndefinedFunction(&'source str, FunctionIdentifier),
     NoOverloadForFunction(&'source str, FunctionIdentifier),
     AmbiguousOverload(&'source str, FunctionIdentifier),
-    UnexpectedType { span: &'source str, expected: Type, found: Type },
-    InvalidOperandTypes { span: &'source str, left: Type, right: Type },
-    InvalidOperandType { span: &'source str, typ: Type },
+    UnexpectedType { span: &'source str, expected: TypeId, found: TypeId },
+    InvalidOperandTypes { span: &'source str, left: TypeId, right: TypeId },
+    InvalidOperandType { span: &'source str, typ: TypeId },
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
     InvalidLvalue(&'source str),
     ImmutableLvalue(&'source str),
-    InvalidCast { span: &'source str, from: Type, to: Type },
+    InvalidCast { span: &'source str, from: TypeId, to: TypeId },
     InvalidExternFunctionName(&'source str, Function),
     UndefinedType(&'source str),
 }
@@ -193,9 +138,15 @@ impl Type {
     }
 }
 
-impl fmt::Display for Type {
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct TypeId(*const Type);
+
+pub struct TypePrinter<'source>(pub &'source Compiler<'source>, pub TypeId);
+
+impl<'source> fmt::Display for TypePrinter<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        let string = match *self {
+        let type_info = self.0.resolve_type_id(self.1);
+        let string = match *type_info {
             Type::Integer8 => "int8",
             Type::Integer16 => "int16",
             Type::Integer32 => "int32",
@@ -206,12 +157,12 @@ impl fmt::Display for Type {
             Type::Natural64 => "nat64",
             Type::Bool => "bool",
             Type::Null => "null",
-            Type::Reference(ref subtype) => {
-                write!(formatter, "ref {}", subtype)?;
+            Type::Reference(subtype) => {
+                write!(formatter, "ref {}", TypePrinter(self.0, subtype))?;
                 ""
             },
-            Type::MutableReference(ref subtype) => {
-                write!(formatter, "mut {}", subtype)?;
+            Type::MutableReference(subtype) => {
+                write!(formatter, "mut {}", TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Error => "<error>",
@@ -221,18 +172,147 @@ impl fmt::Display for Type {
     }
 }
 
+pub struct FunctionPrinter<'source>(pub &'source Compiler<'source>, pub &'source Function);
+
+impl<'source> fmt::Display for FunctionPrinter<'source> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "(")?;
+
+        let mut i = 0;
+
+        let mut written_anything = false;
+
+        for part in self.1.name.iter() {
+            if written_anything {
+                write!(formatter, " ")?;
+            }
+
+            match *part {
+                Some(ref x) => write!(formatter, "{}", x)?,
+                None => {
+                    write!(formatter, ":{}", TypePrinter(self.0, self.1.arguments[i]))?;
+                    i += 1;
+                },
+            }
+
+            written_anything = true;
+        }
+
+        write!(formatter, "): {}", TypePrinter(self.0, self.1.return_type))
+    }
+}
+
+pub struct FunctionIdentifierPrinter<'source>(&'source Compiler<'source>, &'source FunctionIdentifier);
+
+impl<'source> fmt::Display for FunctionIdentifierPrinter<'source> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "(")?;
+
+        let mut i = 0;
+
+        let mut written_anything = false;
+
+        for part in self.1.name.iter() {
+            if written_anything {
+                write!(formatter, " ")?;
+            }
+
+            match *part {
+                Some(ref x) => write!(formatter, "{}", x)?,
+                None => {
+                    write!(formatter, ":{}", TypePrinter(self.0, self.1.arguments[i]))?;
+                    i += 1;
+                },
+            }
+
+            written_anything = true;
+        }
+
+        write!(formatter, ")")
+    }
+}
+
 impl<'source> Compiler<'source> {
-    pub fn with_options(options: Options, source: &'source str) -> Self {
+    pub fn new(options: Options, source: &'source str, type_arena: &'source mut Arena<Type>) -> Self {
         Self {
-            name_resolution_map: HashMap::new(),
-            signature_resolution_map: HashMap::new(),
+            name_resolution_map: HashMap::with_capacity(32),
+            signature_resolution_map: HashMap::with_capacity(32),
             has_errors: Cell::new(false),
-            expression_spans: HashMap::new(),
-            statement_spans: HashMap::new(),
-            definition_spans: HashMap::new(),
+            expression_spans: HashMap::with_capacity(1024),
+            statement_spans: HashMap::with_capacity(1024),
+            definition_spans: HashMap::with_capacity(32),
             options,
             source,
+            type_map: Cell::new(HashMap::with_capacity(32)),
+            type_arena,
         }
+    }
+
+    pub fn get_type_id(&self, typ: Type) -> TypeId {
+        let mut type_map = self.type_map.take();
+        if let Some(&type_id) = type_map.get(&typ) {
+            self.type_map.set(type_map);
+            type_id
+        } else {
+            let type_id = TypeId(self.type_arena.alloc(typ.clone()));
+            type_map.insert(typ, type_id);
+            self.type_map.set(type_map);
+            type_id
+        }
+    }
+
+    pub fn resolve_type_id(&self, type_id: TypeId) -> &Type {
+        // This is safe so long as all TypeIds come from functions like `Compiler::get_type_id`
+        // that generate pointers to `self.type_arena`, since all memory allocated in that arena
+        // stays around while the `Compiler` still exists.
+        unsafe {
+            &*type_id.0
+        }
+    }
+
+    pub fn is_error_type(&self, type_id: TypeId) -> bool {
+        *self.resolve_type_id(type_id) == Type::Error
+    }
+
+    pub fn type_error(&self) -> TypeId {
+        self.get_type_id(Type::Error)
+    }
+
+    pub fn type_bool(&self) -> TypeId {
+        self.get_type_id(Type::Bool)
+    }
+
+    pub fn type_null(&self) -> TypeId {
+        self.get_type_id(Type::Null)
+    }
+
+    pub fn type_ref(&self, other: TypeId) -> TypeId {
+        self.get_type_id(Type::Reference(other))
+    }
+
+    pub fn type_mut(&self, other: TypeId) -> TypeId {
+        self.get_type_id(Type::MutableReference(other))
+    }
+
+    pub fn can_autocast(&self, from: TypeId, to: TypeId) -> bool {
+        let type1 = self.resolve_type_id(from);
+        let type2 = self.resolve_type_id(to);
+        type1.can_autocast_to(type2)
+    }
+
+    pub fn can_cast(&self, from: TypeId, to: TypeId) -> bool {
+        let type1 = self.resolve_type_id(from);
+        let type2 = self.resolve_type_id(to);
+        type1.can_cast_to(type2)
+    }
+
+    pub fn types_match(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
+        // in theory, we could just return type_id1.0 == type_id2.0
+        let type1 = self.resolve_type_id(type_id1);
+        let type2 = self.resolve_type_id(type_id2);
+        let result = type1 == type2;
+        debug_assert!(!result || type_id1.0 == type_id2.0);
+        result
     }
 
     pub fn report_error(&self, error: Error<'source>) {
@@ -275,27 +355,27 @@ impl<'source> Compiler<'source> {
                 print_span(self.source, span);
             },
             UndefinedFunction(span, ref identifier) => {
-                eprintln!("undefined function: {}", identifier);
+                eprintln!("undefined function: {}", FunctionIdentifierPrinter(self, identifier));
                 print_span(self.source, span);
             },
             NoOverloadForFunction(span, ref identifier) => {
-                eprintln!("no matching overload for function: {}", identifier);
+                eprintln!("no matching overload for function: {}", FunctionIdentifierPrinter(self, identifier));
                 print_span(self.source, span);
             },
             AmbiguousOverload(span, ref identifier) => {
-                eprintln!("call to overloaded function is ambiguous: {}", identifier);
+                eprintln!("call to overloaded function is ambiguous: {}", FunctionIdentifierPrinter(self, identifier));
                 print_span(self.source, span);
             },
-            UnexpectedType { span, ref expected, ref found } => {
-                eprintln!("invalid type: expected {}, found {}", expected, found);
+            UnexpectedType { span, expected, found } => {
+                eprintln!("invalid type: expected {}, found {}", TypePrinter(self, expected), TypePrinter(self, found));
                 print_span(self.source, span);
             },
-            InvalidOperandTypes { span, ref left, ref right } => {
-                eprintln!("invalid operand types: {}, {}", left, right);
+            InvalidOperandTypes { span, left, right } => {
+                eprintln!("invalid operand types: {}, {}", TypePrinter(self, left), TypePrinter(self, right));
                 print_span(self.source, span);
             },
-            InvalidOperandType { span, ref typ } => {
-                eprintln!("invalid operand type: {}", typ);
+            InvalidOperandType { span, typ } => {
+                eprintln!("invalid operand type: {}", TypePrinter(self, typ));
                 print_span(self.source, span);
             },
             FunctionMightNotReturn(span) => {
@@ -318,12 +398,12 @@ impl<'source> Compiler<'source> {
                 eprintln!("lvalue is immutable");
                 print_span(self.source, span);
             },
-            InvalidCast { span, ref from, ref to } => {
-                eprintln!("invalid cast: {} to {}", from, to);
+            InvalidCast { span, from, to } => {
+                eprintln!("invalid cast: {} to {}", TypePrinter(self, from), TypePrinter(self, to));
                 print_span(self.source, span);
             },
-            InvalidExternFunctionName(span, ref signature) => {
-                eprintln!("invalid extern function signature: {}", signature);
+            InvalidExternFunctionName(span, ref function) => {
+                eprintln!("invalid extern function signature: {}", FunctionPrinter(self, function));
                 print_span(self.source, span);
             },
             UndefinedType(span) => {
@@ -333,8 +413,8 @@ impl<'source> Compiler<'source> {
         }
     }
 
-    pub fn resolve_type(&self, typ: &Expression) -> Type {
-        match *typ {
+    pub fn resolve_type(&self, typ: &Expression) -> TypeId {
+        let typ = match *typ {
             Expression::Variable("int8") => Type::Integer8,
             Expression::Variable("int16") => Type::Integer16,
             Expression::Variable("int32") => Type::Integer32,
@@ -345,17 +425,27 @@ impl<'source> Compiler<'source> {
             Expression::Variable("nat64") => Type::Natural64,
             Expression::Variable("bool") => Type::Bool,
             Expression::Null => Type::Null,
-            Expression::Reference(ref subexpression) => Type::Reference(Box::new(self.resolve_type(subexpression))),
-            Expression::MutableReference(ref subexpression) => Type::MutableReference(Box::new(self.resolve_type(subexpression))),
+            Expression::Reference(ref subexpression) => Type::Reference(self.resolve_type(subexpression)),
+            Expression::MutableReference(ref subexpression) => Type::MutableReference(self.resolve_type(subexpression)),
             _ => {
                 let span = self.expression_span(typ);
                 self.report_error(Error::UndefinedType(span));
                 Type::Error
             },
+        };
+        self.get_type_id(typ)
+    }
+
+    pub fn load_type_definition(&mut self, definition: &'source Definition<'source>) {
+        match *definition {
+            Definition::Type(..) => {
+                panic!()
+            },
+            Definition::Function(..) | Definition::Extern(..) => {},
         }
     }
 
-    pub fn parse_definition(&mut self, definition: &'source Definition<'source>) {
+    pub fn load_function_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
             Definition::Function(ref signature, ..) | Definition::Extern(ref signature) => {
                 let name: Box<_> = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
@@ -385,6 +475,7 @@ impl<'source> Compiler<'source> {
                     .or_insert_with(|| vec![function.clone()]);
                 self.signature_resolution_map.insert(signature, function);
             },
+            Definition::Type(..) => {},
         }
     }
 
@@ -404,17 +495,17 @@ impl<'source> Compiler<'source> {
     ///    should be able to be ignored as far as the matching strategy is concerned.
     ///
     /// This function employs the obvious algorithm that satisfies the above properties.
-    pub fn lookup_function(&self, span: &'source str, name: &'source FunctionName<'source>, argument_types: &[&Type]) -> Option<&Function> {
+    pub fn lookup_function(&self, span: &'source str, name: &'source FunctionName<'source>, argument_types: &[TypeId]) -> Option<&Function> {
         // FIXME(cleanup): this code isn't ideal and could probably be simplified & optimized
         let function_identifier = FunctionIdentifier {
             name: name.iter().map(|x| x.map(|y| y.into())).collect(),
-            arguments: argument_types.iter().cloned().cloned().collect(),
+            arguments: argument_types.into(),
         };
 
         if let Some(functions) = self.name_resolution_map.get(&name) {
             let candidates: Box<[_]> = functions.iter()
                 // Can we autocast our parameters to match this function's types?
-                .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, y)| x.can_autocast_to(y))).collect();
+                .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, &y)| self.can_autocast(x, y))).collect();
 
             if candidates.len() == 0 {
                 self.report_error(Error::NoOverloadForFunction(span, function_identifier));
@@ -437,7 +528,7 @@ impl<'source> Compiler<'source> {
                     .zip(argument_types.iter())
                     .enumerate()
                     .filter(|&(i, _)| !ignorable[i])
-                    .all(|(_, (x, &y))| x == y)
+                    .all(|(_, (&x, &y))| self.types_match(x, y))
                 {
                     // We have a match!
                     return Some(function)

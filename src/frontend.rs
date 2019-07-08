@@ -1,5 +1,3 @@
-extern crate argparse;
-
 use std::io::{Read, Write};
 use std::fs;
 use std::path::Path;
@@ -68,7 +66,8 @@ pub fn main() {
 
             let mut stdin = compiler_process.stdin.as_mut().expect("failed to open cc stdin");
 
-            let mut compiler = Compiler::with_options(options, &source);
+            let mut type_arena = typed_arena::Arena::new();
+            let mut compiler = Compiler::new(options, &source, &mut type_arena);
             let mut parser = Parser::from_source(&mut compiler, &source);
 
             let mut definitions = vec![];
@@ -110,9 +109,12 @@ pub fn main() {
     }
 }
 
-fn compile_source<'source, W: Write>(compiler: &mut Compiler<'source>, definitions: &'source [Box<Definition>], output: &mut W) {
+fn compile_source<'source, W: Write>(compiler: &'source mut Compiler<'source>, definitions: &'source [Box<Definition>], output: &mut W) {
     for definition in definitions {
-        compiler.parse_definition(definition);
+        compiler.load_type_definition(definition);
+    }
+    for definition in definitions {
+        compiler.load_function_definition(definition);
     }
 
     let mut translate = true;

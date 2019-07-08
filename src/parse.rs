@@ -41,6 +41,7 @@ pub enum Token<'source> {
     Null,
     False,
     True,
+    Type,
     EndOfFile,
 }
 
@@ -88,6 +89,7 @@ impl<'source> fmt::Display for Token<'source> {
             Null => "null",
             False => "false",
             True => "true",
+            Type => "type",
             EndOfFile => "<end of file>",
         })?;
         Ok(())
@@ -198,6 +200,7 @@ pub type Block<'source> = [Box<Statement<'source>>];
 pub enum Definition<'source> {
     Function(FunctionSignature<'source>, Box<Block<'source>>),
     Extern(FunctionSignature<'source>),
+    Type(&'source str, Box<Expression<'source>>)
 }
 
 /// The name of a function; e.g., `Foo _ _ Bar _`.
@@ -257,7 +260,6 @@ pub enum Error<'source> {
 
 type Precedence = i8;
 
-#[derive(Debug)]
 pub struct Parser<'compiler, 'source> {
     compiler: &'compiler mut Compiler<'source>,
     source: &'source str,
@@ -534,6 +536,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "null" => Ok(Token::Null),
                     "false" => Ok(Token::False),
                     "true" => Ok(Token::True),
+                    "type" => Ok(Token::Type),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -855,6 +858,15 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Extern(signature)
+            },
+            Token::Type => {
+                let _ = self.parse_token();
+                let name = self.parse_lowercase_identifier()?;
+                self.expect(&Token::ColonEquals)?;
+                let typ = self.parse_expression()?;
+                span = &self.source[low..self.position];
+
+                Definition::Type(name, typ)
             },
             _ => {
                 let signature = self.parse_function_signature()?;

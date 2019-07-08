@@ -2,7 +2,7 @@ use std::mem;
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator};
-use crate::compile::{Type, Compiler, Error, Function};
+use crate::compile::{Type, TypeId, Compiler, Error, Function, TypePrinter, FunctionPrinter};
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
@@ -44,11 +44,10 @@ type VariableId = usize;
 
 #[derive(Debug, Clone)]
 pub struct Variable {
-    pub typ: Type,
+    pub typ: TypeId,
     pub is_temporary: bool,
 }
 
-#[derive(Debug)]
 pub struct IrGenerator<'source> {
     pub compiler: &'source Compiler<'source>,
     pub locals: HashMap<&'source str, VariableId>,
@@ -95,7 +94,7 @@ impl<'source> IrGenerator<'source> {
     }
 
     fn generate_error(&mut self) -> VariableId {
-        let variable = self.new_variable(Variable { typ: Type::Error, is_temporary: true });
+        let variable = self.new_variable(Variable { typ: self.compiler.type_error(), is_temporary: true });
         self.instructions.push(Instruction::Error(variable));
         variable
     }
@@ -111,7 +110,7 @@ impl<'source> IrGenerator<'source> {
 
         // Then generate argument *locals* that we can mutate etc.
         for ((argument_id, &(name, _)), typ) in self.signature.arguments.iter().enumerate().zip(types.into_iter()) {
-            let typ = Type::MutableReference(Box::new(typ));
+            let typ = self.compiler.type_mut(typ);
             let variable_id = self.new_variable(Variable { typ, is_temporary: false });
             self.instructions.push(Instruction::Allocate(variable_id));
             self.instructions.push(Instruction::Store(variable_id, argument_id));
@@ -151,20 +150,20 @@ impl<'source> IrGenerator<'source> {
 
     /// Autocast the given variable to the given type, if necessary.  If no such cast is possible,
     /// generate an error using the given span.
-    fn autocast_variable_to_type(&mut self, variable: VariableId, expected_type: &Type, span: &'source str) -> VariableId {
-        let found_type = &self.variables[variable].typ;
+    fn autocast_variable_to_type(&mut self, variable: VariableId, expected_type: TypeId, span: &'source str) -> VariableId {
+        let found_type = self.variables[variable].typ;
 
-        if found_type == expected_type {
+        if self.compiler.types_match(found_type, expected_type) {
             // don't need to do anything
             variable
-        } else if found_type.can_autocast_to(expected_type) {
+        } else if self.compiler.can_autocast(found_type, expected_type) {
             // do an autocast
-            let return_variable = self.new_variable(Variable { typ: expected_type.clone(), is_temporary: true });
+            let return_variable = self.new_variable(Variable { typ: expected_type, is_temporary: true });
             self.instructions.push(Instruction::Cast(return_variable, variable));
             return_variable
         } else {
             // generate an error
-            self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type.clone(), found: found_type.clone() });
+            self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type, found: found_type });
             let error = self.generate_error();
             error
         }
@@ -172,12 +171,13 @@ impl<'source> IrGenerator<'source> {
 
     /// Return the type of the lvalue with the given ID.  The provided variable should always be of
     /// a reference type.
-    pub fn get_lvalue_type(&self, variable_id: VariableId) -> Type {
-        match self.variables[variable_id].typ {
-            Type::MutableReference(ref typ) => (**typ).clone(),
-            Type::Reference(ref typ) => (**typ).clone(),
-            Type::Error => Type::Error,
-            ref typ => unreachable!("lvalue of type {:?}", typ),
+    pub fn get_lvalue_type(&self, variable_id: VariableId) -> TypeId {
+        let type_id = self.variables[variable_id].typ;
+        match *self.compiler.resolve_type_id(type_id) {
+            Type::MutableReference(typ) => typ,
+            Type::Reference(typ) => typ,
+            Type::Error => self.compiler.type_error(),
+            _ => unreachable!("lvalue of type {}", TypePrinter(self.compiler, type_id)),
         }
     }
 
@@ -194,7 +194,7 @@ impl<'source> IrGenerator<'source> {
                 if self.locals_stack.contains(&name) {
                     self.compiler.report_error(Error::ShadowedName(name));
                 } else {
-                    let new_variable_id = self.new_variable(Variable { typ: Type::MutableReference(Box::new(typ)), is_temporary: false });
+                    let new_variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(new_variable_id));
                     self.instructions.push(Instruction::Store(new_variable_id, variable_id));
                     self.locals_stack.push(name);
@@ -207,14 +207,14 @@ impl<'source> IrGenerator<'source> {
                 let right_variable_id = self.generate_ir_from_expression(right);
                 let span = self.compiler.expression_span(right);
                 let left_variable_type = self.get_lvalue_type(left_variable_id);
-                let final_variable_id = self.autocast_variable_to_type(right_variable_id, &left_variable_type, span);
+                let final_variable_id = self.autocast_variable_to_type(right_variable_id, left_variable_type, span);
 
                 self.instructions.push(Instruction::Store(left_variable_id, final_variable_id));
             },
             Statement::Return(ref expression) => {
                 let return_variable = self.generate_ir_from_expression(expression);
 
-                let expected_type = &self.function.return_type;
+                let expected_type = self.function.return_type;
                 let span = self.compiler.expression_span(expression);
                 let return_variable = self.autocast_variable_to_type(return_variable, expected_type, span);
                 self.instructions.push(Instruction::Return(return_variable));
@@ -223,7 +223,7 @@ impl<'source> IrGenerator<'source> {
             Statement::If(ref condition, ref then_block, ref else_block) => {
                 let condition_variable = self.generate_ir_from_expression(condition);
                 let condition_span = self.compiler.expression_span(condition);
-                let condition_variable = self.autocast_variable_to_type(condition_variable, &Type::Bool, condition_span);
+                let condition_variable = self.autocast_variable_to_type(condition_variable, self.compiler.type_bool(), condition_span);
 
                 let mut diverges = true;
 
@@ -254,7 +254,7 @@ impl<'source> IrGenerator<'source> {
 
                 let condition_variable = self.generate_ir_from_expression(condition);
                 let condition_span = self.compiler.expression_span(condition);
-                let condition_variable = self.autocast_variable_to_type(condition_variable, &Type::Bool, condition_span);
+                let condition_variable = self.autocast_variable_to_type(condition_variable, self.compiler.type_bool(), condition_span);
 
                 let branch = self.instructions.len();
                 self.instructions.push(Instruction::Nop);
@@ -310,7 +310,7 @@ impl<'source> IrGenerator<'source> {
 
         match *expression {
             Expression::Integer(i, signed, size) => {
-                let typ = match (signed, size) {
+                let typ = self.compiler.get_type_id(match (signed, size) {
                     (false, 8) => Type::Natural8,
                     (false, 16) => Type::Natural16,
                     (false, 32) => Type::Natural32,
@@ -320,18 +320,18 @@ impl<'source> IrGenerator<'source> {
                     (true, 32) => Type::Integer32,
                     (true, 64) => Type::Integer64,
                     _ => unreachable!(),
-                };
+                });
                 let variable = self.new_variable(Variable { typ, is_temporary: true });
                 self.instructions.push(Instruction::ConstantInteger(variable, i));
                 variable
             },
             Expression::Null => {
-                let variable_id = self.new_variable(Variable { typ: Type::Null, is_temporary: true });
+                let variable_id = self.new_variable(Variable { typ: self.compiler.type_null(), is_temporary: true });
                 self.instructions.push(Instruction::Null(variable_id));
                 variable_id
             },
             Expression::Bool(is_true) => {
-                let variable_id = self.new_variable(Variable { typ: Type::Bool, is_temporary: true });
+                let variable_id = self.new_variable(Variable { typ: self.compiler.type_bool(), is_temporary: true });
                 self.instructions.push(Instruction::Bool(variable_id, is_true));
                 variable_id
             },
@@ -347,14 +347,14 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Call(ref name, ref arguments) => {
                 let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
-                let argument_types: Box<[_]> = argument_variables.iter().map(|&x| &self.variables[x].typ).collect();
+                let argument_types: Box<[_]> = argument_variables.iter().map(|&x| self.variables[x].typ).collect();
 
-                if argument_types.iter().any(|x| **x == Type::Error) {
+                if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
                     self.generate_error()
                 } else if let Some(function) = self.compiler.lookup_function(expression_span, name, &argument_types) {
                     debug_assert_eq!(function.arguments.len(), arguments.len());
 
-                    for (i, (expected_type, &found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
+                    for (i, (&expected_type, &found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
                         let span = self.compiler.expression_span(&*arguments[i]);
                         self.autocast_variable_to_type(found_variable, expected_type, span);
                     }
@@ -382,9 +382,9 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
                     BinaryOperator::Cast => {
                         let variable_id = self.generate_ir_from_expression(left);
-                        let old_type = &self.variables[variable_id].typ;
+                        let old_type = self.variables[variable_id].typ;
                         let typ = self.compiler.resolve_type(right);
-                        if old_type.can_cast_to(&typ) {
+                        if self.compiler.can_cast(old_type, typ) {
                             let new_variable_id = self.new_variable(Variable { typ, is_temporary: true });
                             self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
                             return new_variable_id
@@ -398,20 +398,30 @@ impl<'source> IrGenerator<'source> {
                 let left_variable = self.generate_ir_from_expression(left);
                 let right_variable = self.generate_ir_from_expression(right);
 
-                let type1 = &self.variables[left_variable].typ;
-                let type2 = &self.variables[right_variable].typ;
-                let output_type = match (type1, type2) {
-                    (_, _) if type1 == type2 && type1.is_integral() && operator.is_arithmetic() => type1.clone(),
-                    (_, _) if type1 == type2 && type1.is_integral() && operator.is_comparison() => Type::Bool,
+                let type1 = self.variables[left_variable].typ;
+                let type2 = self.variables[right_variable].typ;
+                let type_info1 = self.compiler.resolve_type_id(self.variables[left_variable].typ);
+                let type_info2 = self.compiler.resolve_type_id(self.variables[right_variable].typ);
+                let output_type = match (type_info1, type_info2) {
+                    (_, _)
+                        if self.compiler.types_match(type1, type2)
+                        && type_info1.is_integral()
+                        && operator.is_arithmetic()
+                      => type1,
+                    (_, _)
+                        if self.compiler.types_match(type1, type2)
+                        && type_info1.is_integral()
+                        && operator.is_comparison()
+                      => self.compiler.type_bool(),
                     (&Type::Reference(_), _) | (&Type::MutableReference(_), _)
-                        if type2.is_integral() && operator == BinaryOperator::Offset
-                      => type1.clone(),
-                    (_, &Type::Error) | (&Type::Error, _) => Type::Error,
+                        if type_info2.is_integral() && operator == BinaryOperator::Offset
+                      => type1,
+                    (_, &Type::Error) | (&Type::Error, _) => self.compiler.type_error(),
                     (_, _) => {
                         self.compiler.report_error(Error::InvalidOperandTypes {
                             span: expression_span,
-                            left: (*type1).clone(),
-                            right: (*type2).clone(),
+                            left: type1,
+                            right: type2,
                         });
                         return self.generate_error()
                     },
@@ -434,12 +444,13 @@ impl<'source> IrGenerator<'source> {
                 let sub_index = self.generate_ir_from_expression(subexpression);
                 let sub_variable = &self.variables[sub_index];
 
-                match sub_variable.typ {
+                let subtype = sub_variable.typ;
+                match *self.compiler.resolve_type_id(subtype) {
                     Type::Integer8
                     | Type::Integer16
                     | Type::Integer32
                     | Type::Integer64 => {
-                        let output_variable = Variable { typ: sub_variable.typ.clone(), is_temporary: true };
+                        let output_variable = Variable { typ: subtype.clone(), is_temporary: true };
                         let output_index = self.new_variable(output_variable);
 
                         self.instructions.push(Instruction::Negate(output_index, sub_index));
@@ -449,7 +460,7 @@ impl<'source> IrGenerator<'source> {
                         self.generate_error()
                     },
                     _ => {
-                        self.compiler.report_error(Error::InvalidOperandType { span: expression_span, typ: sub_variable.typ.clone() });
+                        self.compiler.report_error(Error::InvalidOperandType { span: expression_span, typ: subtype });
                         self.generate_error()
                     }
                 }
@@ -470,7 +481,7 @@ impl<'source> IrGenerator<'source> {
                     if mutable {
                         variable_id
                     } else {
-                        let new_type = Type::Reference(Box::new(self.get_lvalue_type(variable_id)));
+                        let new_type = self.compiler.type_ref(self.get_lvalue_type(variable_id));
                         let new_variable_id = self.new_variable(Variable {
                             typ: new_type,
                             is_temporary: true,
@@ -489,7 +500,7 @@ impl<'source> IrGenerator<'source> {
                     self.generate_error()
                 } else if mutable {
                     let typ = self.compiler.resolve_type(type_expression);
-                    let variable_id = self.new_variable(Variable { typ: Type::MutableReference(Box::new(typ)), is_temporary: false });
+                    let variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(variable_id));
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable_id);
@@ -497,12 +508,12 @@ impl<'source> IrGenerator<'source> {
                     variable_id
                 } else {
                     let typ = self.compiler.resolve_type(type_expression);
-                    let variable_id = self.new_variable(Variable { typ: Type::MutableReference(Box::new(typ.clone())), is_temporary: false });
+                    let variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ.clone()), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(variable_id));
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable_id);
 
-                    let new_type = Type::Reference(Box::new(typ));
+                    let new_type = self.compiler.type_ref(typ);
                     let new_variable_id = self.new_variable(Variable {
                         typ: new_type,
                         is_temporary: true,
@@ -513,14 +524,14 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Dereference(ref subexpression) => {
                 let variable_id = self.generate_ir_from_expression(subexpression);
-                let typ = &self.variables[variable_id].typ;
+                let typ = self.variables[variable_id].typ;
                 let subspan = self.compiler.expression_span(subexpression);
-                match *typ {
-                    Type::MutableReference(ref subtype) => {
+                match *self.compiler.resolve_type_id(typ) {
+                    Type::MutableReference(subtype) => {
                         if mutable {
                             variable_id
                         } else {
-                            let new_type = Type::Reference(Box::new((**subtype).clone()));
+                            let new_type = self.compiler.type_ref(subtype);
                             let new_variable_id = self.new_variable(Variable {
                                 typ: new_type,
                                 is_temporary: true,
@@ -559,10 +570,10 @@ impl<'source> IrGenerator<'source> {
 
 impl<'source> fmt::Display for IrGenerator<'source> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        writeln!(f, "{}", self.function)?;
+        writeln!(f, "{}", FunctionPrinter(self.compiler, self.function))?;
 
         for (i, variable) in self.variables.iter().enumerate() {
-            writeln!(f, "VAR %{}: {}", i, variable.typ)?;
+            writeln!(f, "VAR %{}: {}", i, TypePrinter(self.compiler, variable.typ))?;
         }
 
         let mut first = true;
@@ -579,7 +590,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
                 Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
                 Instruction::Call(destination, function, ref arguments) => {
-                    write!(f, "%{} = call ${}", destination, function)?;
+                    write!(f, "%{} = call ${}", destination, FunctionPrinter(self.compiler, function))?;
                     for argument in arguments.iter() {
                         write!(f, ", {}", argument)?;
                     }
@@ -604,9 +615,9 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
 
                 Instruction::Cast(variable1, variable2) => {
-                    let type1 = &self.variables[variable1].typ;
-                    let type2 = &self.variables[variable2].typ;
-                    write!(f, "%{} = cast [{} to {}] %{}", variable1, type2, type1, variable2)?;
+                    let type1 = self.variables[variable1].typ;
+                    let type2 = self.variables[variable2].typ;
+                    write!(f, "%{} = cast [{} to {}] %{}", variable1, TypePrinter(self.compiler, type2), TypePrinter(self.compiler, type1), variable2)?;
                 },
 
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
