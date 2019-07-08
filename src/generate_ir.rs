@@ -120,7 +120,13 @@ impl<'source> IrGenerator<'source> {
 
         let diverges = self.generate_ir_from_block(block);
         if !diverges {
+            if let Type::Null = *self.compiler.get_type_info(self.function.return_type) {
+                let variable_id = self.new_variable(Variable { typ: self.compiler.type_null(), is_temporary: true });
+                self.instructions.push(Instruction::Null(variable_id));
+                self.instructions.push(Instruction::Return(variable_id));
+            } else {
             self.compiler.report_error(Error::FunctionMightNotReturn(self.span));
+            }
         }
 
         debug_assert_eq!(self.break_instructions_to_insert.len(), 0);
