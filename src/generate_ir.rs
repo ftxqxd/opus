@@ -2,7 +2,7 @@ use std::mem;
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator};
-use crate::compile::{Type, TypeId, Compiler, Error, Function, TypePrinter, FunctionPrinter};
+use crate::compile::{Type, TypeId, PrimitiveType, Compiler, Error, Function, TypePrinter, FunctionPrinter};
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
@@ -310,15 +310,15 @@ impl<'source> IrGenerator<'source> {
 
         match *expression {
             Expression::Integer(i, signed, size) => {
-                let typ = self.compiler.get_type_id(match (signed, size) {
-                    (false, 8) => Type::Natural8,
-                    (false, 16) => Type::Natural16,
-                    (false, 32) => Type::Natural32,
-                    (false, 64) => Type::Natural64,
-                    (true, 8) => Type::Integer8,
-                    (true, 16) => Type::Integer16,
-                    (true, 32) => Type::Integer32,
-                    (true, 64) => Type::Integer64,
+                let typ = self.compiler.type_primitive(match (signed, size) {
+                    (false, 8) => PrimitiveType::Natural8,
+                    (false, 16) => PrimitiveType::Natural16,
+                    (false, 32) => PrimitiveType::Natural32,
+                    (false, 64) => PrimitiveType::Natural64,
+                    (true, 8) => PrimitiveType::Integer8,
+                    (true, 16) => PrimitiveType::Integer16,
+                    (true, 32) => PrimitiveType::Integer32,
+                    (true, 64) => PrimitiveType::Integer64,
                     _ => unreachable!(),
                 });
                 let variable = self.new_variable(Variable { typ, is_temporary: true });

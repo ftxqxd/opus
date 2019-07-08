@@ -18,11 +18,13 @@ pub struct Compiler<'source> {
 
     pub source: &'source str,
 
-    type_map: Cell<HashMap<Type, TypeId>>,
+    primitive_types: Box<[TypeId; PrimitiveType::NumberOfPrimitives as usize]>,
     type_arena: &'source Arena<Type>,
+
+    type_resolution_map: HashMap<&'source str, TypeId>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub enum Type {
     Integer8,
     Integer16,
@@ -50,7 +52,7 @@ pub struct Function {
 /// A function name together with its argument types.
 ///
 /// This is used for error messages.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct FunctionIdentifier {
     pub name: Box<[Option<Box<str>>]>,
     pub arguments: Box<[TypeId]>,
@@ -78,57 +80,6 @@ pub enum Error<'source> {
 }
 
 impl Type {
-    pub fn can_autocast_to(&self, other: &Type) -> bool {
-        if self == other {
-            return true
-        }
-
-        match (self, other) {
-            // errors
-            (&Type::Error, _)
-            | (_, &Type::Error)
-            // integer upcasts
-            | (&Type::Integer8, &Type::Integer64)
-            | (&Type::Integer16, &Type::Integer64)
-            | (&Type::Integer32, &Type::Integer64)
-            | (&Type::Integer8, &Type::Integer32)
-            | (&Type::Integer16, &Type::Integer32)
-            | (&Type::Integer8, &Type::Integer16)
-            // natural upcasts
-            | (&Type::Natural8, &Type::Natural64)
-            | (&Type::Natural16, &Type::Natural64)
-            | (&Type::Natural32, &Type::Natural64)
-            | (&Type::Natural8, &Type::Natural32)
-            | (&Type::Natural16, &Type::Natural32)
-            | (&Type::Natural8, &Type::Natural16)
-            // natural -> integer upcasts
-            | (&Type::Natural8, &Type::Integer64)
-            | (&Type::Natural16, &Type::Integer64)
-            | (&Type::Natural32, &Type::Integer64)
-            | (&Type::Natural8, &Type::Integer32)
-            | (&Type::Natural16, &Type::Integer32)
-            | (&Type::Natural8, &Type::Integer16)
-              => true,
-            // mut -> ref
-            (&Type::MutableReference(ref typ1), &Type::Reference(ref typ2)) if typ1 == typ2
-              => true,
-            _ => false,
-        }
-    }
-
-    pub fn can_cast_to(&self, other: &Type) -> bool {
-        if self.can_autocast_to(other) {
-            true
-        } else {
-            match (self, other) {
-                (_, _) if self.is_integral() && other.is_integral() => true,
-                (&Type::Reference(_), &Type::Reference(_))
-                | (&Type::MutableReference(_), &Type::MutableReference(_)) => true,
-                _ => false,
-            }
-        }
-    }
-
     pub fn is_integral(&self) -> bool {
         match *self {
             Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64
@@ -138,8 +89,12 @@ impl Type {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
-pub struct TypeId(*const Type);
+/// An opaque type that identifies a type.
+///
+/// Note that the relationship between a `Type` and its `TypeId` is not one-to-one: the same `Type`
+/// can have multiple corresponding `TypeId`s.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct TypeId(*mut Type);
 
 pub struct TypePrinter<'source>(pub &'source Compiler<'source>, pub TypeId);
 
@@ -232,37 +187,67 @@ impl<'source> fmt::Display for FunctionIdentifierPrinter<'source> {
     }
 }
 
+#[repr(usize)]
+pub enum PrimitiveType {
+    Integer8 = 0,
+    Integer16,
+    Integer32,
+    Integer64,
+    Natural8,
+    Natural16,
+    Natural32,
+    Natural64,
+    Bool,
+    Null,
+    Error,
+    NumberOfPrimitives,
+}
+
 impl<'source> Compiler<'source> {
     pub fn new(options: Options, source: &'source str, type_arena: &'source mut Arena<Type>) -> Self {
+        const SIZE: usize = PrimitiveType::NumberOfPrimitives as usize;
+        let mut primitive_types = Box::new([TypeId(0 as *mut _); SIZE]);
+        for i in 0..SIZE {
+            let type_info = match i {
+                0 => Type::Integer8,
+                1 => Type::Integer16,
+                2 => Type::Integer32,
+                3 => Type::Integer64,
+                4 => Type::Natural8,
+                5 => Type::Natural16,
+                6 => Type::Natural32,
+                7 => Type::Natural64,
+                8 => Type::Bool,
+                9 => Type::Null,
+                10 => Type::Error,
+                _ => unreachable!(),
+            };
+            let pointer = type_arena.alloc(type_info);
+            primitive_types[i] = TypeId(pointer);
+        }
+
         Self {
             name_resolution_map: HashMap::with_capacity(32),
             signature_resolution_map: HashMap::with_capacity(32),
             has_errors: Cell::new(false),
             expression_spans: HashMap::with_capacity(1024),
             statement_spans: HashMap::with_capacity(1024),
-            definition_spans: HashMap::with_capacity(32),
+            definition_spans: HashMap::with_capacity(64),
             options,
             source,
-            type_map: Cell::new(HashMap::with_capacity(32)),
             type_arena,
+            type_resolution_map: HashMap::with_capacity(32),
+            primitive_types,
         }
     }
 
-    pub fn get_type_id(&self, typ: Type) -> TypeId {
-        let mut type_map = self.type_map.take();
-        if let Some(&type_id) = type_map.get(&typ) {
-            self.type_map.set(type_map);
-            type_id
-        } else {
-            let type_id = TypeId(self.type_arena.alloc(typ.clone()));
-            type_map.insert(typ, type_id);
-            self.type_map.set(type_map);
-            type_id
-        }
+    pub fn new_type_id(&self, typ: Type) -> TypeId {
+        let type_id = TypeId(self.type_arena.alloc(typ.clone()));
+        type_id
     }
 
     pub fn resolve_type_id(&self, type_id: TypeId) -> &Type {
-        // This is safe so long as all TypeIds come from functions like `Compiler::get_type_id`
+        // This is safe so long as all TypeIds come from functions like `Compiler::new_type_id`
         // that generate pointers to `self.type_arena`, since all memory allocated in that arena
         // stays around while the `Compiler` still exists.
         unsafe {
@@ -271,48 +256,112 @@ impl<'source> Compiler<'source> {
     }
 
     pub fn is_error_type(&self, type_id: TypeId) -> bool {
-        *self.resolve_type_id(type_id) == Type::Error
+        if let Type::Error = *self.resolve_type_id(type_id) { true } else { false }
+    }
+
+    pub fn type_primitive(&self, primitive: PrimitiveType) -> TypeId {
+        self.primitive_types[primitive as usize]
     }
 
     pub fn type_error(&self) -> TypeId {
-        self.get_type_id(Type::Error)
+        self.type_primitive(PrimitiveType::Error)
     }
 
     pub fn type_bool(&self) -> TypeId {
-        self.get_type_id(Type::Bool)
+        self.type_primitive(PrimitiveType::Bool)
     }
 
     pub fn type_null(&self) -> TypeId {
-        self.get_type_id(Type::Null)
+        self.type_primitive(PrimitiveType::Null)
     }
 
     pub fn type_ref(&self, other: TypeId) -> TypeId {
-        self.get_type_id(Type::Reference(other))
+        self.new_type_id(Type::Reference(other))
     }
 
     pub fn type_mut(&self, other: TypeId) -> TypeId {
-        self.get_type_id(Type::MutableReference(other))
+        self.new_type_id(Type::MutableReference(other))
     }
 
     pub fn can_autocast(&self, from: TypeId, to: TypeId) -> bool {
+        if self.types_match(from, to) {
+            return true
+        }
+
         let type1 = self.resolve_type_id(from);
         let type2 = self.resolve_type_id(to);
-        type1.can_autocast_to(type2)
+
+        match (type1, type2) {
+            // errors
+            (&Type::Error, _)
+            | (_, &Type::Error)
+            // integer upcasts
+            | (&Type::Integer8, &Type::Integer64)
+            | (&Type::Integer16, &Type::Integer64)
+            | (&Type::Integer32, &Type::Integer64)
+            | (&Type::Integer8, &Type::Integer32)
+            | (&Type::Integer16, &Type::Integer32)
+            | (&Type::Integer8, &Type::Integer16)
+            // natural upcasts
+            | (&Type::Natural8, &Type::Natural64)
+            | (&Type::Natural16, &Type::Natural64)
+            | (&Type::Natural32, &Type::Natural64)
+            | (&Type::Natural8, &Type::Natural32)
+            | (&Type::Natural16, &Type::Natural32)
+            | (&Type::Natural8, &Type::Natural16)
+            // natural -> integer upcasts
+            | (&Type::Natural8, &Type::Integer64)
+            | (&Type::Natural16, &Type::Integer64)
+            | (&Type::Natural32, &Type::Integer64)
+            | (&Type::Natural8, &Type::Integer32)
+            | (&Type::Natural16, &Type::Integer32)
+            | (&Type::Natural8, &Type::Integer16)
+              => true,
+            // mut -> ref
+            (&Type::MutableReference(typ1), &Type::Reference(typ2)) if self.types_match(typ1, typ2)
+              => true,
+            _ => false,
+        }
     }
 
     pub fn can_cast(&self, from: TypeId, to: TypeId) -> bool {
-        let type1 = self.resolve_type_id(from);
-        let type2 = self.resolve_type_id(to);
-        type1.can_cast_to(type2)
+        if self.can_autocast(from, to) {
+            true
+        } else {
+            let type1 = self.resolve_type_id(from);
+            let type2 = self.resolve_type_id(to);
+            match (type1, type2) {
+                (_, _) if type1.is_integral() && type2.is_integral() => true,
+                (&Type::Reference(_), &Type::Reference(_))
+                | (&Type::MutableReference(_), &Type::MutableReference(_)) => true,
+                _ => false,
+            }
+        }
     }
 
     pub fn types_match(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
-        // in theory, we could just return type_id1.0 == type_id2.0
         let type1 = self.resolve_type_id(type_id1);
         let type2 = self.resolve_type_id(type_id2);
-        let result = type1 == type2;
-        debug_assert!(!result || type_id1.0 == type_id2.0);
-        result
+        match (type1, type2) {
+            (&Type::Integer8, &Type::Integer8) => true,
+            (&Type::Integer16, &Type::Integer16) => true,
+            (&Type::Integer32, &Type::Integer32) => true,
+            (&Type::Integer64, &Type::Integer64) => true,
+            (&Type::Natural8, &Type::Natural8) => true,
+            (&Type::Natural16, &Type::Natural16) => true,
+            (&Type::Natural32, &Type::Natural32) => true,
+            (&Type::Natural64, &Type::Natural64) => true,
+            (&Type::Bool, &Type::Bool) => true,
+            (&Type::Null, &Type::Null) => true,
+            (&Type::Reference(subtype1), &Type::Reference(subtype2)) => {
+                self.types_match(subtype1, subtype2)
+            },
+            (&Type::MutableReference(subtype1), &Type::MutableReference(subtype2)) => {
+                self.types_match(subtype1, subtype2)
+            },
+            (&Type::Error, &Type::Error) => true,
+            _ => false,
+        }
     }
 
     pub fn report_error(&self, error: Error<'source>) {
@@ -414,32 +463,41 @@ impl<'source> Compiler<'source> {
     }
 
     pub fn resolve_type(&self, typ: &Expression) -> TypeId {
-        let typ = match *typ {
-            Expression::Variable("int8") => Type::Integer8,
-            Expression::Variable("int16") => Type::Integer16,
-            Expression::Variable("int32") => Type::Integer32,
-            Expression::Variable("int64") => Type::Integer64,
-            Expression::Variable("nat8") => Type::Natural8,
-            Expression::Variable("nat16") => Type::Natural16,
-            Expression::Variable("nat32") => Type::Natural32,
-            Expression::Variable("nat64") => Type::Natural64,
-            Expression::Variable("bool") => Type::Bool,
-            Expression::Null => Type::Null,
-            Expression::Reference(ref subexpression) => Type::Reference(self.resolve_type(subexpression)),
-            Expression::MutableReference(ref subexpression) => Type::MutableReference(self.resolve_type(subexpression)),
-            _ => {
-                let span = self.expression_span(typ);
-                self.report_error(Error::UndefinedType(span));
-                Type::Error
+        let span = self.expression_span(typ);
+        match *typ {
+            Expression::Variable("int8")  => self.type_primitive(PrimitiveType::Integer8),
+            Expression::Variable("int16") => self.type_primitive(PrimitiveType::Integer16),
+            Expression::Variable("int32") => self.type_primitive(PrimitiveType::Integer32),
+            Expression::Variable("int64") => self.type_primitive(PrimitiveType::Integer64),
+            Expression::Variable("nat8")  => self.type_primitive(PrimitiveType::Natural8),
+            Expression::Variable("nat16") => self.type_primitive(PrimitiveType::Natural16),
+            Expression::Variable("nat32") => self.type_primitive(PrimitiveType::Natural32),
+            Expression::Variable("nat64") => self.type_primitive(PrimitiveType::Natural64),
+            Expression::Variable("bool")  => self.type_primitive(PrimitiveType::Bool),
+            Expression::Variable(name) => {
+                if let Some(&typ) = self.type_resolution_map.get(name) {
+                    typ
+                } else {
+                    self.report_error(Error::UndefinedType(span));
+                    self.type_error()
+                }
             },
-        };
-        self.get_type_id(typ)
+            Expression::Null => self.type_null(),
+            Expression::Reference(ref subexpression) => self.type_ref(self.resolve_type(subexpression)),
+            Expression::MutableReference(ref subexpression) => self.type_mut(self.resolve_type(subexpression)),
+            _ => {
+                self.report_error(Error::UndefinedType(span));
+                self.type_error()
+            },
+        }
     }
 
     pub fn load_type_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
-            Definition::Type(..) => {
-                panic!()
+            Definition::Type(name, ..) => {
+                // Make a new placeholder TypeId to be filled in with real type information later
+                let type_id = TypeId(self.type_arena.alloc(Type::Error));
+                self.type_resolution_map.insert(name, type_id);
             },
             Definition::Function(..) | Definition::Extern(..) => {},
         }
@@ -475,7 +533,14 @@ impl<'source> Compiler<'source> {
                     .or_insert_with(|| vec![function.clone()]);
                 self.signature_resolution_map.insert(signature, function);
             },
-            Definition::Type(..) => {},
+            Definition::Type(name, ref type_expression) => {
+                let type_id = self.resolve_type(type_expression);
+                let typ = self.resolve_type_id(type_id).clone();
+                let TypeId(pointer) = self.type_resolution_map[name];
+                unsafe {
+                    *pointer = typ;
+                }
+            },
         }
     }
 
