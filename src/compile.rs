@@ -415,6 +415,14 @@ impl<'source> Compiler<'source> {
                 eprintln!("unexpected character: {}", c);
                 print_span(self.source, span);
             },
+            ParseError(UnexpectedEndOfFile(span)) => {
+                eprintln!("unexpected end of file");
+                print_span(self.source, span);
+            },
+            ParseError(InvalidEscapeSequence(span)) => {
+                eprintln!("invalid escape sequence");
+                print_span(self.source, span);
+            },
             ParseError(UnexpectedToken(span, ref token)) => {
                 eprintln!("unexpected token: {}", token);
                 print_span(self.source, span);

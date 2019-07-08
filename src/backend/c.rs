@@ -127,9 +127,23 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
     write!(output, "i{}: ", instruction_index)?;
     let instruction = &ir.instructions[instruction_index];
     match *instruction {
-        Instruction::ConstantInteger(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
+        Instruction::Integer(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
         Instruction::Null(destination) => writeln!(output, "var{} = 0;", destination)?,
         Instruction::Bool(destination, is_true) => writeln!(output, "var{} = {};", destination, if is_true { 1 } else { 0 })?,
+        Instruction::String(destination, ref bytes) => {
+            write!(output, "var{} = \"", destination)?;
+            for &byte in bytes.iter() {
+                match byte {
+                    b'\\' => write!(output, "\\\\")?,
+                    b'"' => write!(output, "\\\"")?,
+                    b'\n' => write!(output, "\\n")?,
+                    b' ' ..= b'~' => write!(output, "{}", byte as char)?,
+                    _ => write!(output, "\\x{:02x}", byte)?,
+                }
+            }
+            writeln!(output, "\";")?
+        },
+
         Instruction::Call(destination, function, ref arguments) => {
             write!(output, "var{} = ", destination)?;
             mangle_function_name(&ir.compiler, function, output)?;

@@ -25,6 +25,7 @@ pub enum Token<'source> {
     Tilde,
     Dot,
     Integer(u64, bool, u8),
+    String(Box<[u8]>),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
     Indent,
@@ -73,6 +74,10 @@ impl<'source> fmt::Display for Token<'source> {
             Dot => ".",
             Integer(value, is_signed, size) => {
                 buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
+                &buffer
+            },
+            String(ref bytes) => {
+                buffer = format!("{}", std::string::String::from_utf8_lossy(bytes));
                 &buffer
             },
             LowercaseIdentifier(s) => s,
@@ -175,6 +180,7 @@ pub enum Expression<'source> {
     Integer(u64, bool, u8),
     Null,
     Bool(bool),
+    String(Box<[u8]>),
     Variable(&'source str),
     VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
@@ -258,6 +264,8 @@ impl<'source> fmt::Debug for FunctionSignature<'source> {
 #[derive(Debug, PartialEq)]
 pub enum Error<'source> {
     UnexpectedCharacter(&'source str, char),
+    UnexpectedEndOfFile(&'source str),
+    InvalidEscapeSequence(&'source str),
     UnexpectedToken(&'source str, Token<'source>),
     ExpectedFoundToken { span: &'source str, expected: Token<'source>, found: Token<'source> },
     ExpectedLowercaseIdentifier(&'source str, Token<'source>),
@@ -547,6 +555,48 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
+            Some('"') => {
+                let mut chars = vec![];
+                loop {
+                    let c = self.advance();
+                    match c {
+                        Some('"') => break,
+                        Some('\\') => {
+                            let escape_position = self.position;
+                            let escape_code = self.advance();
+                            match escape_code {
+                                Some('\\') => chars.push(b'\\'),
+                                Some('"') => chars.push(b'"'),
+                                Some('n') => chars.push(b'\n'),
+                                Some('r') => chars.push(b'\r'),
+                                Some('t') => chars.push(b'\t'),
+                                Some('x') => {
+                                    let high_nibble = self.advance();
+                                    let low_nibble = self.advance();
+                                    match (high_nibble.and_then(|x| x.to_digit(16)), low_nibble.and_then(|x| x.to_digit(16))) {
+                                        (Some(h), Some(l)) => {
+                                            chars.push(h as u8 * 16 + l as u8);
+                                        },
+                                        _ => return Err(Error::InvalidEscapeSequence(&self.source[escape_position..self.position])),
+                                    }
+                                },
+                                Some(_) => return Err(Error::InvalidEscapeSequence(self.char_at(escape_position))),
+                                None => return Err(Error::UnexpectedEndOfFile(&self.source[self.position..])),
+                            }
+                        },
+                        Some(c) => {
+                            let start = chars.len();
+                            chars.extend(&[0, 0, 0, 0]);
+                            let length = c.encode_utf8(&mut chars[start..]).len();
+                            for _ in 0..4 - length {
+                                chars.pop();
+                            }
+                        }
+                        None => return Err(Error::UnexpectedEndOfFile(&self.source[self.position..])),
+                    };
+                }
+                Ok(Token::String(chars.into()))
+            },
             Some(c) => Err(Error::UnexpectedCharacter(self.char_at(self.token_low), c)),
             None => Ok(Token::EndOfFile),
         }
@@ -659,6 +709,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let expression = match token {
             Token::Integer(i, signed, size) => {
                 Expression::Integer(i, signed, size)
+            },
+            Token::String(bytes) => {
+                Expression::String(bytes)
             },
             Token::LowercaseIdentifier(s) => Expression::Variable(s),
             Token::LeftParenthesis => {

@@ -6,9 +6,11 @@ use crate::compile::{Type, TypeId, PrimitiveType, Compiler, Error, Function, Typ
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
-    ConstantInteger(VariableId, u64),
+    Integer(VariableId, u64),
     Null(VariableId),
     Bool(VariableId, bool),
+    String(VariableId, Box<[u8]>),
+
     Call(VariableId, &'source Function, Box<[VariableId]>),
 
     Allocate(VariableId),
@@ -329,7 +331,7 @@ impl<'source> IrGenerator<'source> {
                     _ => unreachable!(),
                 });
                 let variable = self.new_variable(Variable { typ, is_temporary: true });
-                self.instructions.push(Instruction::ConstantInteger(variable, i));
+                self.instructions.push(Instruction::Integer(variable, i));
                 variable
             },
             Expression::Null => {
@@ -340,6 +342,12 @@ impl<'source> IrGenerator<'source> {
             Expression::Bool(is_true) => {
                 let variable_id = self.new_variable(Variable { typ: self.compiler.type_bool(), is_temporary: true });
                 self.instructions.push(Instruction::Bool(variable_id, is_true));
+                variable_id
+            },
+            Expression::String(ref bytes) => {
+                let typ = self.compiler.type_ref(self.compiler.type_primitive(PrimitiveType::Natural8));
+                let variable_id = self.new_variable(Variable { typ, is_temporary: true });
+                self.instructions.push(Instruction::String(variable_id, bytes.clone()));
                 variable_id
             },
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
@@ -623,9 +631,11 @@ impl<'source> fmt::Display for IrGenerator<'source> {
             write!(f, "{:<03} ", instruction_index)?;
 
             match *instruction {
-                Instruction::ConstantInteger(destination, value) => write!(f, "%{} = {}", destination, value)?,
+                Instruction::Integer(destination, value) => write!(f, "%{} = {}", destination, value)?,
                 Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
                 Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
+                Instruction::String(destination, ref bytes) => write!(f, "%{} = {:?}", destination, String::from_utf8_lossy(bytes))?,
+
                 Instruction::Call(destination, function, ref arguments) => {
                     write!(f, "%{} = call ${}", destination, FunctionPrinter(self.compiler, function))?;
                     for argument in arguments.iter() {
