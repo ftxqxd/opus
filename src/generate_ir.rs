@@ -173,7 +173,7 @@ impl<'source> IrGenerator<'source> {
     /// a reference type.
     pub fn get_lvalue_type(&self, variable_id: VariableId) -> TypeId {
         let type_id = self.variables[variable_id].typ;
-        match *self.compiler.resolve_type_id(type_id) {
+        match *self.compiler.get_type_info(type_id) {
             Type::MutableReference(typ) => typ,
             Type::Reference(typ) => typ,
             Type::Error => self.compiler.type_error(),
@@ -400,8 +400,8 @@ impl<'source> IrGenerator<'source> {
 
                 let type1 = self.variables[left_variable].typ;
                 let type2 = self.variables[right_variable].typ;
-                let type_info1 = self.compiler.resolve_type_id(self.variables[left_variable].typ);
-                let type_info2 = self.compiler.resolve_type_id(self.variables[right_variable].typ);
+                let type_info1 = self.compiler.get_type_info(self.variables[left_variable].typ);
+                let type_info2 = self.compiler.get_type_info(self.variables[right_variable].typ);
                 let output_type = match (type_info1, type_info2) {
                     (_, _)
                         if self.compiler.types_match(type1, type2)
@@ -445,7 +445,7 @@ impl<'source> IrGenerator<'source> {
                 let sub_variable = &self.variables[sub_index];
 
                 let subtype = sub_variable.typ;
-                match *self.compiler.resolve_type_id(subtype) {
+                match *self.compiler.get_type_info(subtype) {
                     Type::Integer8
                     | Type::Integer16
                     | Type::Integer32
@@ -526,7 +526,7 @@ impl<'source> IrGenerator<'source> {
                 let variable_id = self.generate_ir_from_expression(subexpression);
                 let typ = self.variables[variable_id].typ;
                 let subspan = self.compiler.expression_span(subexpression);
-                match *self.compiler.resolve_type_id(typ) {
+                match *self.compiler.get_type_info(typ) {
                     Type::MutableReference(subtype) => {
                         if mutable {
                             variable_id

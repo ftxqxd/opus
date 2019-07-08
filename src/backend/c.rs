@@ -83,7 +83,7 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
 }
 
 fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeId) -> io::Result<()> {
-    let type_info = compiler.resolve_type_id(typ);
+    let type_info = compiler.get_type_info(typ);
     match *type_info {
         Type::Integer8 => write!(output, "int8_t"),
         Type::Integer16 => write!(output, "int16_t"),
@@ -209,7 +209,7 @@ fn mangle_function_name<W: Write>(compiler: &Compiler, function: &Function, outp
 
 fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) -> io::Result<()> {
     // FIXME: mangling is just terrible.
-    let type_info = compiler.resolve_type_id(typ);
+    let type_info = compiler.get_type_info(typ);
     match *type_info {
         Type::Integer8 => write!(output, "int8"),
         Type::Integer16 => write!(output, "int16"),

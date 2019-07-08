@@ -100,7 +100,7 @@ pub struct TypePrinter<'source>(pub &'source Compiler<'source>, pub TypeId);
 
 impl<'source> fmt::Display for TypePrinter<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        let type_info = self.0.resolve_type_id(self.1);
+        let type_info = self.0.get_type_info(self.1);
         let string = match *type_info {
             Type::Integer8 => "int8",
             Type::Integer16 => "int16",
@@ -246,7 +246,7 @@ impl<'source> Compiler<'source> {
         type_id
     }
 
-    pub fn resolve_type_id(&self, type_id: TypeId) -> &Type {
+    pub fn get_type_info(&self, type_id: TypeId) -> &Type {
         // This is safe so long as all TypeIds come from functions like `Compiler::new_type_id`
         // that generate pointers to `self.type_arena`, since all memory allocated in that arena
         // stays around while the `Compiler` still exists.
@@ -256,7 +256,7 @@ impl<'source> Compiler<'source> {
     }
 
     pub fn is_error_type(&self, type_id: TypeId) -> bool {
-        if let Type::Error = *self.resolve_type_id(type_id) { true } else { false }
+        if let Type::Error = *self.get_type_info(type_id) { true } else { false }
     }
 
     pub fn type_primitive(&self, primitive: PrimitiveType) -> TypeId {
@@ -288,8 +288,8 @@ impl<'source> Compiler<'source> {
             return true
         }
 
-        let type1 = self.resolve_type_id(from);
-        let type2 = self.resolve_type_id(to);
+        let type1 = self.get_type_info(from);
+        let type2 = self.get_type_info(to);
 
         match (type1, type2) {
             // errors
@@ -328,8 +328,8 @@ impl<'source> Compiler<'source> {
         if self.can_autocast(from, to) {
             true
         } else {
-            let type1 = self.resolve_type_id(from);
-            let type2 = self.resolve_type_id(to);
+            let type1 = self.get_type_info(from);
+            let type2 = self.get_type_info(to);
             match (type1, type2) {
                 (_, _) if type1.is_integral() && type2.is_integral() => true,
                 (&Type::Reference(_), &Type::Reference(_))
@@ -340,8 +340,8 @@ impl<'source> Compiler<'source> {
     }
 
     pub fn types_match(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
-        let type1 = self.resolve_type_id(type_id1);
-        let type2 = self.resolve_type_id(type_id2);
+        let type1 = self.get_type_info(type_id1);
+        let type2 = self.get_type_info(type_id2);
         match (type1, type2) {
             (&Type::Integer8, &Type::Integer8) => true,
             (&Type::Integer16, &Type::Integer16) => true,
@@ -535,7 +535,7 @@ impl<'source> Compiler<'source> {
             },
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
-                let typ = self.resolve_type_id(type_id).clone();
+                let typ = self.get_type_info(type_id).clone();
                 let TypeId(pointer) = self.type_resolution_map[name];
                 unsafe {
                     *pointer = typ;
