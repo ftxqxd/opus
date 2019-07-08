@@ -22,6 +22,7 @@ pub struct Compiler<'source> {
     type_arena: &'source Arena<Type>,
 
     type_resolution_map: HashMap<&'source str, TypeId>,
+    reverse_type_resolution_map: HashMap<*mut Type, &'source str>,
 }
 
 #[derive(Debug, Clone)]
@@ -93,13 +94,18 @@ impl Type {
 ///
 /// Note that the relationship between a `Type` and its `TypeId` is not one-to-one: the same `Type`
 /// can have multiple corresponding `TypeId`s.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug)]
 pub struct TypeId(*mut Type);
 
 pub struct TypePrinter<'source>(pub &'source Compiler<'source>, pub TypeId);
 
 impl<'source> fmt::Display for TypePrinter<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        if let Some(name) = self.0.reverse_type_resolution_map.get(&self.1 .0) {
+            write!(formatter, "{}", name)?;
+            return Ok(())
+        }
+
         let type_info = self.0.get_type_info(self.1);
         let string = match *type_info {
             Type::Integer8 => "int8",
@@ -237,6 +243,7 @@ impl<'source> Compiler<'source> {
             source,
             type_arena,
             type_resolution_map: HashMap::with_capacity(32),
+            reverse_type_resolution_map: HashMap::with_capacity(32),
             primitive_types,
         }
     }
@@ -498,6 +505,7 @@ impl<'source> Compiler<'source> {
                 // Make a new placeholder TypeId to be filled in with real type information later
                 let type_id = TypeId(self.type_arena.alloc(Type::Error));
                 self.type_resolution_map.insert(name, type_id);
+                self.reverse_type_resolution_map.insert(type_id.0, name);
             },
             Definition::Function(..) | Definition::Extern(..) => {},
         }
@@ -582,7 +590,7 @@ impl<'source> Compiler<'source> {
                 vec![true; argument_types.len()],
                 |mut x, candidate| {
                     for i in 0..x.len() {
-                        x[i] &= candidate.arguments[i] == candidate1.arguments[i];
+                        x[i] &= self.types_match(candidate.arguments[i], candidate1.arguments[i]);
                     }
                     x
                 }
