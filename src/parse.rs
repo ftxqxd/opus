@@ -23,6 +23,7 @@ pub enum Token<'source> {
     PlusPlus,
     At,
     Tilde,
+    Dot,
     Integer(u64, bool, u8),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
@@ -42,6 +43,7 @@ pub enum Token<'source> {
     False,
     True,
     Type,
+    Record,
     EndOfFile,
 }
 
@@ -68,6 +70,7 @@ impl<'source> fmt::Display for Token<'source> {
             Percent => "%",
             At => "@",
             Tilde => "¯",
+            Dot => ".",
             Integer(value, is_signed, size) => {
                 buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
                 &buffer
@@ -90,6 +93,7 @@ impl<'source> fmt::Display for Token<'source> {
             False => "false",
             True => "true",
             Type => "type",
+            Record => "record",
             EndOfFile => "<end of file>",
         })?;
         Ok(())
@@ -178,6 +182,7 @@ pub enum Expression<'source> {
     Reference(Box<Expression<'source>>),
     MutableReference(Box<Expression<'source>>),
     Dereference(Box<Expression<'source>>),
+    Field(&'source str, Box<Expression<'source>>),
     Negate(Box<Expression<'source>>),
     Parentheses(Box<Expression<'source>>),
 }
@@ -200,7 +205,8 @@ pub type Block<'source> = [Box<Statement<'source>>];
 pub enum Definition<'source> {
     Function(FunctionSignature<'source>, Box<Block<'source>>),
     Extern(FunctionSignature<'source>),
-    Type(&'source str, Box<Expression<'source>>)
+    Type(&'source str, Box<Expression<'source>>),
+    Record(&'source str, Box<[(&'source str, Box<Expression<'source>>)]>),
 }
 
 /// The name of a function; e.g., `Foo _ _ Bar _`.
@@ -404,7 +410,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
             Some('←') => Ok(Token::ColonEquals),
-            Some('¯') => Ok(Token::Tilde),
             Some(':') => {
                 match self.peek() {
                     Some('=') => {
@@ -451,7 +456,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('/') => Ok(Token::Slash),
             Some('%') => Ok(Token::Percent),
             Some('@') => Ok(Token::At),
-            Some('~') => Ok(Token::Tilde),
+            Some('~') | Some('¯') => Ok(Token::Tilde),
+            Some('.') => Ok(Token::Dot),
             Some(c @ '0'..= '9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'..= '9') = self.peek() {
@@ -537,6 +543,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "false" => Ok(Token::False),
                     "true" => Ok(Token::True),
                     "type" => Ok(Token::Type),
+                    "record" => Ok(Token::Record),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -725,6 +732,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     expression_box = Box::new(Expression::Dereference(expression_box));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
+                Token::Dot => {
+                    let _ = self.parse_token();
+                    let field_name = self.parse_lowercase_identifier()?;
+                    expression_box = Box::new(Expression::Field(field_name, expression_box));
+                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                },
                 _ => break,
             }
         }
@@ -867,6 +880,26 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Type(name, typ)
+            },
+            Token::Record => {
+                let _ = self.parse_token();
+                let name = self.parse_lowercase_identifier()?;
+                self.expect(&Token::Indent)?;
+                let mut fields = vec![];
+                loop {
+                    let token = self.peek_token()?;
+                    if token == Token::Dedent {
+                        let _ = self.parse_token();
+                        break
+                    }
+                    let field_name = self.parse_lowercase_identifier()?;
+                    self.expect(&Token::Colon)?;
+                    let field_type = self.parse_expression()?;
+                    fields.push((field_name, field_type));
+                }
+                span = &self.source[low..self.position];
+
+                Definition::Record(name, fields.into())
             },
             _ => {
                 let signature = self.parse_function_signature()?;

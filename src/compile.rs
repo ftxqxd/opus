@@ -21,7 +21,7 @@ pub struct Compiler<'source> {
     primitive_types: Box<[TypeId; PrimitiveType::NumberOfPrimitives as usize]>,
     type_arena: &'source Arena<Type>,
 
-    type_resolution_map: HashMap<&'source str, TypeId>,
+    pub type_resolution_map: HashMap<&'source str, TypeId>,
     reverse_type_resolution_map: HashMap<*mut Type, &'source str>,
 }
 
@@ -39,6 +39,10 @@ pub enum Type {
     Null,
     Reference(TypeId),
     MutableReference(TypeId),
+    Record {
+        name: Box<str>,
+        fields: Box<[(Box<str>, TypeId)]>,
+    },
     Error,
 }
 
@@ -78,6 +82,8 @@ pub enum Error<'source> {
     InvalidCast { span: &'source str, from: TypeId, to: TypeId },
     InvalidExternFunctionName(&'source str, Function),
     UndefinedType(&'source str),
+    FieldAccessOnNonRecord(&'source str, TypeId),
+    FieldDoesNotExist(&'source str, TypeId, &'source str),
 }
 
 impl Type {
@@ -124,6 +130,10 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             },
             Type::MutableReference(subtype) => {
                 write!(formatter, "mut {}", TypePrinter(self.0, subtype))?;
+                ""
+            },
+            Type::Record { ref name, .. } => {
+                write!(formatter, "{}", name)?;
                 ""
             },
             Type::Error => "<error>",
@@ -366,6 +376,25 @@ impl<'source> Compiler<'source> {
             (&Type::MutableReference(subtype1), &Type::MutableReference(subtype2)) => {
                 self.types_match(subtype1, subtype2)
             },
+            (&Type::Record { name: ref name1, fields: ref fields1 }, &Type::Record { name: ref name2, fields: ref fields2 }) => {
+                if name1 != name2 {
+                    return false
+                }
+
+                if fields1.len() != fields2.len() {
+                    return false
+                }
+
+                for &(ref field_name1, field_type1) in fields1.iter() {
+                    if fields2.iter().find(|&&(ref field_name2, field_type2)| {
+                        field_name1 == field_name2 && self.types_match(field_type1, field_type2)
+                    }).is_none() {
+                        return false
+                    }
+                }
+
+                true
+            },
             (&Type::Error, &Type::Error) => true,
             _ => false,
         }
@@ -466,6 +495,14 @@ impl<'source> Compiler<'source> {
                 eprintln!("undefined type: {}", span);
                 print_span(self.source, span);
             },
+            FieldAccessOnNonRecord(span, typ) => {
+                eprintln!("attempt to access field of non-record: {}", TypePrinter(self, typ));
+                print_span(self.source, span);
+            },
+            FieldDoesNotExist(span, typ, field_name) => {
+                eprintln!("type {} has no field named '{}'", TypePrinter(self, typ), field_name);
+                print_span(self.source, span);
+            },
         }
     }
 
@@ -501,7 +538,7 @@ impl<'source> Compiler<'source> {
 
     pub fn load_type_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
-            Definition::Type(name, ..) => {
+            Definition::Type(name, ..) | Definition::Record(name, ..) => {
                 // Make a new placeholder TypeId to be filled in with real type information later
                 let type_id = TypeId(self.type_arena.alloc(Type::Error));
                 self.type_resolution_map.insert(name, type_id);
@@ -544,6 +581,17 @@ impl<'source> Compiler<'source> {
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
                 let typ = self.get_type_info(type_id).clone();
+                let TypeId(pointer) = self.type_resolution_map[name];
+                unsafe {
+                    *pointer = typ;
+                }
+            },
+            Definition::Record(name, ref fields) => {
+                let mut resolved_fields = vec![];
+                for &(field_name, ref type_expression) in fields.iter() {
+                    resolved_fields.push((field_name.into(), self.resolve_type(type_expression)));
+                }
+                let typ = Type::Record { name: name.into(), fields: resolved_fields.into() };
                 let TypeId(pointer) = self.type_resolution_map[name];
                 unsafe {
                     *pointer = typ;

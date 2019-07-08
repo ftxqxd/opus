@@ -14,6 +14,7 @@ pub enum Instruction<'source> {
     Allocate(VariableId),
     Load(VariableId, VariableId),
     Store(VariableId, VariableId),
+    Field(VariableId, VariableId, &'source str),
 
     Add(VariableId, VariableId, VariableId),
     Subtract(VariableId, VariableId, VariableId),
@@ -335,7 +336,8 @@ impl<'source> IrGenerator<'source> {
                 self.instructions.push(Instruction::Bool(variable_id, is_true));
                 variable_id
             },
-            Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..) => {
+            Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
+            | Expression::Field(..) => {
                 let pointer_variable_id = self.generate_pointer_from_expression(expression, false);
                 let typ = self.get_lvalue_type(pointer_variable_id);
                 let new_variable_id = self.new_variable(Variable {
@@ -552,7 +554,36 @@ impl<'source> IrGenerator<'source> {
                         self.generate_error()
                     },
                     _ => {
-                        self.compiler.report_error(Error::InvalidOperandType { span, typ: typ.clone() });
+                        self.compiler.report_error(Error::InvalidOperandType { span, typ });
+                        self.generate_error()
+                    },
+                }
+            },
+            Expression::Field(field_name, ref subexpression) => {
+                let record_variable = self.generate_pointer_from_expression(subexpression, mutable);
+                let typ = self.get_lvalue_type(record_variable);
+                let type_info = self.compiler.get_type_info(typ);
+                match *type_info {
+                    Type::Record { ref fields, .. } => {
+                        let field_type_option = fields.iter().find(|&&(ref field_name2, _)| {
+                            **field_name2 == *field_name
+                        }).map(|&(_, field_type)| field_type);
+                        if let Some(field_type) = field_type_option {
+                            let pointer_type = if mutable {
+                                self.compiler.type_mut(field_type)
+                            } else {
+                                self.compiler.type_ref(field_type)
+                            };
+                            let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
+                            self.instructions.push(Instruction::Field(variable_id, record_variable, field_name));
+                            variable_id
+                        } else {
+                            self.compiler.report_error(Error::FieldDoesNotExist(span, typ, field_name));
+                            self.generate_error()
+                        }
+                    },
+                    _ => {
+                        self.compiler.report_error(Error::FieldAccessOnNonRecord(span, typ));
                         self.generate_error()
                     },
                 }
@@ -599,6 +630,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Allocate(destination) => write!(f, "%{} = alloc", destination)?,
                 Instruction::Load(destination, source) => write!(f, "%{} = load %{}", destination, source)?,
                 Instruction::Store(destination, source) => write!(f, "in %{} store %{}", destination, source)?,
+                Instruction::Field(destination, source, field_name) => write!(f, "%{} = fieldptr %{}, {}", destination, source, field_name)?,
 
                 Instruction::Add(variable1, variable2, variable3) => write!(f, "%{} = add %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,

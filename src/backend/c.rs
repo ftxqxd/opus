@@ -17,6 +17,19 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
     writeln!(output, "typedef uint8_t _opust_null;")?;
     writeln!(output, "typedef uint8_t _opust_bool;")?;
 
+    // User-defined types
+    for (_, &type_id) in &compiler.type_resolution_map {
+        let typ = compiler.get_type_info(type_id);
+        if let Type::Record { ref name, ref fields } = *typ {
+            write!(output, "struct {} {{", name)?;
+            for &(ref field_name, field_type) in fields.iter() {
+                translate_type_to_c(compiler, output, field_type)?;
+                write!(output, " {};", field_name)?;
+            }
+            writeln!(output, "}};")?;
+        }
+    }
+
     // Prototypes
     for (_, function) in compiler.signature_resolution_map.iter() {
         translate_function_signature_to_c(compiler, function, output)?;
@@ -103,6 +116,9 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeI
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " *")
         },
+        Type::Record { ref name, .. } => {
+            write!(output, "struct {}", name)
+        },
         Type::Error => write!(output, "internal_compiler_error"),
     }
 }
@@ -136,6 +152,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         },
         Instruction::Load(destination, source) => writeln!(output, "var{} = *var{};", destination, source)?,
         Instruction::Store(destination, source) => writeln!(output, "*var{} = var{};", destination, source)?,
+        Instruction::Field(destination, source, field_name) => writeln!(output, "var{} = &var{}->{};", destination, source, field_name)?,
 
         Instruction::Add(destination, left, right) => writeln!(output, "var{} = var{} + var{};", destination, left, right)?,
         Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
@@ -228,6 +245,9 @@ fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) 
         Type::MutableReference(subtype) => {
             write!(output, "MutableReferenceTo")?;
             mangle_type_name(compiler, subtype, output)
+        },
+        Type::Record { ref name, .. } => {
+            write!(output, "Record{}", name)
         },
         Type::Error => write!(output, "error"),
     }
