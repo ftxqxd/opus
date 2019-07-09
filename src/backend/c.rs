@@ -5,7 +5,7 @@
 
 use std::io::{self, Write};
 use crate::generate_ir::{IrGenerator, Instruction};
-use crate::compile::{Function, Type, TypeId, Compiler};
+use crate::compile::{Function, Type, TypeId, PointerType, Compiler};
 
 /// Initialize C code generation by writing necessary `#include` statements, function prototypes,
 /// and the main function.
@@ -108,19 +108,11 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeI
         Type::Natural64 => write!(output, "uint64_t"),
         Type::Null => write!(output, "_opust_null"),
         Type::Bool => write!(output, "_opust_bool"),
-        Type::Reference(subtype) => {
+        Type::Pointer(PointerType::Reference, subtype) | Type::Pointer(PointerType::Array, subtype) => {
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " const *")
         },
-        Type::MutableReference(subtype) => {
-            translate_type_to_c(compiler, output, subtype)?;
-            write!(output, " *")
-        },
-        Type::ArrayReference(subtype) => {
-            translate_type_to_c(compiler, output, subtype)?;
-            write!(output, " const *")
-        },
-        Type::MutableArrayReference(subtype) => {
+        Type::Pointer(PointerType::Mutable, subtype) | Type::Pointer(PointerType::ArrayMutable, subtype) => {
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " *")
         },
@@ -260,20 +252,14 @@ fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) 
         Type::Natural64 => write!(output, "nat64"),
         Type::Null => write!(output, "null"),
         Type::Bool => write!(output, "bool"),
-        Type::Reference(subtype) => {
-            write!(output, "ReferenceTo")?;
-            mangle_type_name(compiler, subtype, output)
-        },
-        Type::MutableReference(subtype) => {
-            write!(output, "MutableReferenceTo")?;
-            mangle_type_name(compiler, subtype, output)
-        },
-        Type::ArrayReference(subtype) => {
-            write!(output, "ArrayReferenceTo")?;
-            mangle_type_name(compiler, subtype, output)
-        },
-        Type::MutableArrayReference(subtype) => {
-            write!(output, "MutableArrayReferenceTo")?;
+        Type::Pointer(pointer_type, subtype) => {
+            let prefix = match pointer_type {
+                PointerType::Reference => "Reference",
+                PointerType::Mutable => "Mutable",
+                PointerType::Array => "ArrayReference",
+                PointerType::ArrayMutable => "MutableArrayReference",
+            };
+            write!(output, "{}To", prefix)?;
             mangle_type_name(compiler, subtype, output)
         },
         Type::Record { ref name, .. } => {

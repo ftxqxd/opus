@@ -37,15 +37,20 @@ pub enum Type {
     Natural64,
     Bool,
     Null,
-    Reference(TypeId),
-    MutableReference(TypeId),
-    ArrayReference(TypeId),
-    MutableArrayReference(TypeId),
+    Pointer(PointerType, TypeId),
     Record {
         name: Box<str>,
         fields: Box<[(Box<str>, TypeId)]>,
     },
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PointerType {
+    Reference,
+    Mutable,
+    Array,
+    ArrayMutable,
 }
 
 #[derive(Debug, Clone)]
@@ -81,12 +86,12 @@ pub enum Error<'source> {
     ContinueOutsideLoop(&'source str),
     InvalidLvalue(&'source str),
     ImmutableLvalue(&'source str),
+    ArrayPointerToNonArray(&'source str),
     InvalidCast { span: &'source str, from: TypeId, to: TypeId },
     InvalidExternFunctionName(&'source str, Function),
     UndefinedType(&'source str),
     FieldAccessOnNonRecord(&'source str, TypeId),
     FieldDoesNotExist(&'source str, TypeId, &'source str),
-    ExpectedExpressionFoundType(&'source str),
 }
 
 impl Type {
@@ -127,19 +132,19 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Natural64 => "nat64",
             Type::Bool => "bool",
             Type::Null => "null",
-            Type::Reference(subtype) => {
+            Type::Pointer(PointerType::Reference, subtype) => {
                 write!(formatter, "ref {}", TypePrinter(self.0, subtype))?;
                 ""
             },
-            Type::MutableReference(subtype) => {
+            Type::Pointer(PointerType::Mutable, subtype) => {
                 write!(formatter, "mut {}", TypePrinter(self.0, subtype))?;
                 ""
             },
-            Type::ArrayReference(subtype) => {
+            Type::Pointer(PointerType::Array, subtype) => {
                 write!(formatter, "refs {}", TypePrinter(self.0, subtype))?;
                 ""
             },
-            Type::MutableArrayReference(subtype) => {
+            Type::Pointer(PointerType::ArrayMutable, subtype) => {
                 write!(formatter, "muts {}", TypePrinter(self.0, subtype))?;
                 ""
             },
@@ -303,20 +308,24 @@ impl<'source> Compiler<'source> {
         self.type_primitive(PrimitiveType::Null)
     }
 
+    pub fn type_pointer(&self, pointer_type: PointerType, other: TypeId) -> TypeId {
+        self.new_type_id(Type::Pointer(pointer_type, other))
+    }
+
     pub fn type_ref(&self, other: TypeId) -> TypeId {
-        self.new_type_id(Type::Reference(other))
+        self.new_type_id(Type::Pointer(PointerType::Reference, other))
     }
 
     pub fn type_mut(&self, other: TypeId) -> TypeId {
-        self.new_type_id(Type::MutableReference(other))
+        self.new_type_id(Type::Pointer(PointerType::Mutable, other))
     }
 
     pub fn type_refs(&self, other: TypeId) -> TypeId {
-        self.new_type_id(Type::ArrayReference(other))
+        self.new_type_id(Type::Pointer(PointerType::Array, other))
     }
 
     pub fn type_muts(&self, other: TypeId) -> TypeId {
-        self.new_type_id(Type::MutableArrayReference(other))
+        self.new_type_id(Type::Pointer(PointerType::ArrayMutable, other))
     }
 
     pub fn can_autocast(&self, from: TypeId, to: TypeId) -> bool {
@@ -354,10 +363,19 @@ impl<'source> Compiler<'source> {
             | (&Type::Natural8, &Type::Integer16)
               => true,
             // mut -> ref, muts -> refs
-            (&Type::MutableReference(typ1), &Type::Reference(typ2))
-            | (&Type::MutableArrayReference(typ1), &Type::ArrayReference(typ2))
-                if self.types_match(typ1, typ2)
+            (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
+                if self.can_autocast_pointer_type(pointer_type1, pointer_type2) && self.types_match(typ1, typ2)
               => true,
+            _ => false,
+        }
+    }
+
+    pub fn can_autocast_pointer_type(&self, from: PointerType, to: PointerType) -> bool {
+        if from == to { return true }
+
+        match (from, to) {
+            (PointerType::Mutable, PointerType::Reference) => true,
+            (PointerType::ArrayMutable, PointerType::Array) => true,
             _ => false,
         }
     }
@@ -370,8 +388,7 @@ impl<'source> Compiler<'source> {
             let type2 = self.get_type_info(to);
             match (type1, type2) {
                 (_, _) if type1.is_integral() && type2.is_integral() => true,
-                (&Type::Reference(_), &Type::Reference(_))
-                | (&Type::MutableReference(_), &Type::MutableReference(_)) => true,
+                (&Type::Pointer(type1, _), &Type::Pointer(type2, _)) if type1 == type2 => true,
                 _ => false,
             }
         }
@@ -391,10 +408,7 @@ impl<'source> Compiler<'source> {
             (&Type::Natural64, &Type::Natural64) => true,
             (&Type::Bool, &Type::Bool) => true,
             (&Type::Null, &Type::Null) => true,
-            (&Type::Reference(subtype1), &Type::Reference(subtype2)) => self.types_match(subtype1, subtype2),
-            (&Type::MutableReference(subtype1), &Type::MutableReference(subtype2)) => self.types_match(subtype1, subtype2),
-            (&Type::ArrayReference(subtype1), &Type::ArrayReference(subtype2)) => self.types_match(subtype1, subtype2),
-            (&Type::MutableArrayReference(subtype1), &Type::MutableArrayReference(subtype2)) => self.types_match(subtype1, subtype2),
+            (&Type::Pointer(type1, subtype1), &Type::Pointer(type2, subtype2)) => type1 == type2 && self.types_match(subtype1, subtype2),
             (&Type::Record { name: ref name1, fields: ref fields1 }, &Type::Record { name: ref name2, fields: ref fields2 }) => {
                 if name1 != name2 {
                     return false
@@ -510,6 +524,10 @@ impl<'source> Compiler<'source> {
                 eprintln!("lvalue is immutable");
                 print_span(self.source, span);
             },
+            ArrayPointerToNonArray(span) => {
+                eprintln!("attempt to take array reference to non-array lvalue");
+                print_span(self.source, span);
+            },
             InvalidCast { span, from, to } => {
                 eprintln!("invalid cast: {} to {}", TypePrinter(self, from), TypePrinter(self, to));
                 print_span(self.source, span);
@@ -528,10 +546,6 @@ impl<'source> Compiler<'source> {
             },
             FieldDoesNotExist(span, typ, field_name) => {
                 eprintln!("type {} has no field named '{}'", TypePrinter(self, typ), field_name);
-                print_span(self.source, span);
-            },
-            ExpectedExpressionFoundType(span) => {
-                eprintln!("expected expression, found type");
                 print_span(self.source, span);
             },
         }

@@ -2,7 +2,7 @@ use std::mem;
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator};
-use crate::compile::{Type, TypeId, PrimitiveType, Compiler, Error, Function, TypePrinter, FunctionPrinter};
+use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, TypePrinter, FunctionPrinter};
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
@@ -183,8 +183,7 @@ impl<'source> IrGenerator<'source> {
     pub fn get_lvalue_type(&self, variable_id: VariableId) -> TypeId {
         let type_id = self.variables[variable_id].typ;
         match *self.compiler.get_type_info(type_id) {
-            Type::MutableReference(typ) => typ,
-            Type::Reference(typ) => typ,
+            Type::Pointer(_, typ) => typ,
             Type::Error => self.compiler.type_error(),
             _ => unreachable!("lvalue of type {}", TypePrinter(self.compiler, type_id)),
         }
@@ -211,7 +210,7 @@ impl<'source> IrGenerator<'source> {
                 }
             },
             Statement::Assignment(ref left, ref right) => {
-                let left_variable_id = self.generate_pointer_from_expression(left, true);
+                let left_variable_id = self.generate_pointer_from_expression(left, PointerType::Mutable);
 
                 let right_variable_id = self.generate_ir_from_expression(right);
                 let span = self.compiler.expression_span(right);
@@ -352,7 +351,7 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
             | Expression::Field(..) | Expression::Index(..) | Expression::Record(..) => {
-                let pointer_variable_id = self.generate_pointer_from_expression(expression, false);
+                let pointer_variable_id = self.generate_pointer_from_expression(expression, PointerType::Reference);
                 let typ = self.get_lvalue_type(pointer_variable_id);
                 let new_variable_id = self.new_variable(Variable {
                     typ,
@@ -445,11 +444,19 @@ impl<'source> IrGenerator<'source> {
                 output_variable
             },
             Expression::Reference(ref subexpression) => {
-                let variable_id = self.generate_pointer_from_expression(subexpression, false);
+                let variable_id = self.generate_pointer_from_expression(subexpression, PointerType::Reference);
                 variable_id
             },
             Expression::MutableReference(ref subexpression) => {
-                let variable_id = self.generate_pointer_from_expression(subexpression, true);
+                let variable_id = self.generate_pointer_from_expression(subexpression, PointerType::Mutable);
+                variable_id
+            },
+            Expression::ArrayReference(ref subexpression) => {
+                let variable_id = self.generate_pointer_from_expression(subexpression, PointerType::Array);
+                variable_id
+            },
+            Expression::MutableArrayReference(ref subexpression) => {
+                let variable_id = self.generate_pointer_from_expression(subexpression, PointerType::ArrayMutable);
                 variable_id
             },
             Expression::Negate(ref subexpression) => {
@@ -480,31 +487,65 @@ impl<'source> IrGenerator<'source> {
             Expression::Parentheses(ref subexpression) => {
                 self.generate_ir_from_expression(subexpression)
             },
-            Expression::ArrayReference(..) | Expression::MutableArrayReference(..) => {
-                self.compiler.report_error(Error::ExpectedExpressionFoundType(expression_span));
+        }
+    }
+
+    fn try_cast_pointer(&mut self, variable_id: VariableId, pointer_type: PointerType, span: &'source str) -> VariableId {
+        let typ = self.variables[variable_id].typ;
+        let type_info = self.compiler.get_type_info(typ);
+        match *type_info {
+            Type::Pointer(pointer_type2, subtype) => {
+                if pointer_type2 == pointer_type {
+                    // No need to cast
+                    return variable_id
+                } else {
+                    match (pointer_type2, pointer_type) {
+                        (PointerType::Mutable, PointerType::Reference)
+                        | (PointerType::ArrayMutable, PointerType::Array)
+                        | (PointerType::Array, PointerType::Reference)
+                        | (PointerType::ArrayMutable, PointerType::Mutable)
+                        | (PointerType::ArrayMutable, PointerType::Reference) => {
+                            let new_type = self.compiler.type_pointer(pointer_type, subtype);
+                            let new_variable_id = self.new_variable(Variable {
+                                typ: new_type,
+                                is_temporary: true,
+                            });
+                            self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
+                            new_variable_id
+                        },
+                        (PointerType::Reference, PointerType::Mutable)
+                        | (PointerType::Array, PointerType::ArrayMutable) => {
+                            self.compiler.report_error(Error::ImmutableLvalue(span));
+                            self.generate_error()
+                        },
+                        (PointerType::Reference, PointerType::Array)
+                        | (PointerType::Mutable, PointerType::ArrayMutable)
+                        | (PointerType::Reference, PointerType::ArrayMutable)
+                        | (PointerType::Mutable, PointerType::Array) => {
+                            self.compiler.report_error(Error::ArrayPointerToNonArray(span));
+                            self.generate_error()
+                        },
+                        _ => unreachable!(),
+                    }
+                }
+            },
+            Type::Error => {
+                self.generate_error()
+            },
+            _ => {
+                self.compiler.report_error(Error::InvalidOperandType { span, typ });
                 self.generate_error()
             },
         }
     }
 
-    /// Like `generate_ir_from_expression`, but returns a variable of pointer type.  Used for
-    /// lvalues.
-    fn generate_pointer_from_expression(&mut self, expression: &'source Expression<'source>, mutable: bool) -> VariableId {
+    /// Like `generate_ir_from_expression`, but returns a variable of pointer type.  Used for lvalues.
+    fn generate_pointer_from_expression(&mut self, expression: &'source Expression<'source>, pointer_type: PointerType) -> VariableId {
         let span = self.compiler.expression_span(expression);
         match *expression {
             Expression::Variable(name) => {
                 if let Some(&variable_id) = self.locals.get(name) {
-                    if mutable {
-                        variable_id
-                    } else {
-                        let new_type = self.compiler.type_ref(self.get_lvalue_type(variable_id));
-                        let new_variable_id = self.new_variable(Variable {
-                            typ: new_type,
-                            is_temporary: true,
-                        });
-                        self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
-                        new_variable_id
-                    }
+                    self.try_cast_pointer(variable_id, pointer_type, span)
                 } else {
                     self.compiler.report_error(Error::UndefinedVariable(name));
                     self.generate_error()
@@ -514,68 +555,24 @@ impl<'source> IrGenerator<'source> {
                 if self.locals_stack.contains(&name) {
                     self.compiler.report_error(Error::ShadowedName(name));
                     self.generate_error()
-                } else if mutable {
+                } else {
                     let typ = self.compiler.resolve_type(type_expression);
                     let variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(variable_id));
                     self.locals_stack.push(name);
                     self.locals.insert(name, variable_id);
 
-                    variable_id
-                } else {
-                    let typ = self.compiler.resolve_type(type_expression);
-                    let variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ.clone()), is_temporary: false });
-                    self.instructions.push(Instruction::Allocate(variable_id));
-                    self.locals_stack.push(name);
-                    self.locals.insert(name, variable_id);
-
-                    let new_type = self.compiler.type_ref(typ);
-                    let new_variable_id = self.new_variable(Variable {
-                        typ: new_type,
-                        is_temporary: true,
-                    });
-                    self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
-                    new_variable_id
+                    self.try_cast_pointer(variable_id, pointer_type, span)
                 }
             },
             Expression::Dereference(ref subexpression) => {
                 let variable_id = self.generate_ir_from_expression(subexpression);
-                let typ = self.variables[variable_id].typ;
                 let subspan = self.compiler.expression_span(subexpression);
-                match *self.compiler.get_type_info(typ) {
-                    Type::MutableReference(subtype) => {
-                        if mutable {
-                            variable_id
-                        } else {
-                            let new_type = self.compiler.type_ref(subtype);
-                            let new_variable_id = self.new_variable(Variable {
-                                typ: new_type,
-                                is_temporary: true,
-                            });
-                            self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
-                            new_variable_id
-                        }
-                    },
-                    Type::Reference(_) => {
-                        if mutable {
-                            self.compiler.report_error(Error::ImmutableLvalue(subspan));
-                            self.generate_error()
-                        } else {
-                            variable_id
-                        }
-                    },
-                    Type::Error => {
-                        self.generate_error()
-                    },
-                    _ => {
-                        self.compiler.report_error(Error::InvalidOperandType { span, typ });
-                        self.generate_error()
-                    },
-                }
+                self.try_cast_pointer(variable_id, pointer_type, subspan)
             },
             Expression::Field(field_name, ref subexpression) => {
-                let record_variable = self.generate_pointer_from_expression(subexpression, mutable);
-                self.generate_ir_for_field_access(record_variable, field_name, mutable, span)
+                let record_variable = self.generate_pointer_from_expression(subexpression, pointer_type);
+                self.generate_ir_for_field_access(record_variable, field_name, pointer_type, span)
             },
             Expression::Index(ref array_expression, ref index_expression) => {
                 let array_variable = self.generate_ir_from_expression(array_expression);
@@ -590,21 +587,18 @@ impl<'source> IrGenerator<'source> {
                 let array_type_info = self.compiler.get_type_info(array_typ);
 
                 match *array_type_info {
-                    Type::ArrayReference(subtype) | Type::MutableArrayReference(subtype) if !mutable => {
-                        let pointer_type = self.compiler.type_ref(subtype);
-                        let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
-                        self.instructions.push(Instruction::Index(variable_id, array_variable, index_variable));
-                        variable_id
-                    },
-                    Type::MutableArrayReference(subtype) if mutable => {
-                        let pointer_type = self.compiler.type_mut(subtype);
-                        let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
-                        self.instructions.push(Instruction::Index(variable_id, array_variable, index_variable));
-                        variable_id
-                    },
-                    Type::ArrayReference(_) if mutable => {
-                        self.compiler.report_error(Error::ImmutableLvalue(array_span));
-                        self.generate_error()
+                    Type::Pointer(pointer_type2, subtype) => {
+                        let result_type = match pointer_type2 {
+                            PointerType::Array => self.compiler.type_refs(subtype),
+                            PointerType::ArrayMutable => self.compiler.type_muts(subtype),
+                            _ => {
+                                self.compiler.report_error(Error::InvalidOperandType { span: array_span, typ: array_typ });
+                                return self.generate_error()
+                            },
+                        };
+                        let result_variable = self.new_variable(Variable { typ: result_type, is_temporary: true });
+                        self.instructions.push(Instruction::Index(result_variable, array_variable, index_variable));
+                        self.try_cast_pointer(result_variable, pointer_type, array_span)
                     },
                     _ => {
                         self.compiler.report_error(Error::InvalidOperandType { span: array_span, typ: array_typ });
@@ -620,14 +614,14 @@ impl<'source> IrGenerator<'source> {
                 for &(name, ref value) in fields.iter() {
                     let value_variable = self.generate_ir_from_expression(value);
                     let span = self.compiler.expression_span(value);
-                    let field_variable = self.generate_ir_for_field_access(output_variable, name, true, span);
+                    let field_variable = self.generate_ir_for_field_access(output_variable, name, PointerType::Mutable, span);
                     self.instructions.push(Instruction::Store(field_variable, value_variable));
                 }
 
                 output_variable
             },
             Expression::Parentheses(ref subexpression) => {
-                self.generate_pointer_from_expression(subexpression, mutable)
+                self.generate_pointer_from_expression(subexpression, pointer_type)
             },
             _ => {
                 self.compiler.report_error(Error::InvalidLvalue(span));
@@ -636,7 +630,15 @@ impl<'source> IrGenerator<'source> {
         }
     }
 
-    fn generate_ir_for_field_access(&mut self, record_variable: VariableId, field_name: &'source str, mutable: bool, span: &'source str) -> VariableId {
+    fn generate_ir_for_field_access(&mut self, record_variable: VariableId, field_name: &'source str, pointer_type: PointerType, span: &'source str) -> VariableId {
+        match pointer_type {
+            PointerType::Array | PointerType::ArrayMutable => {
+                self.compiler.report_error(Error::ArrayPointerToNonArray(span));
+                return self.generate_error()
+            },
+            _ => {}
+        }
+
         let typ = self.get_lvalue_type(record_variable);
         let type_info = self.compiler.get_type_info(typ);
         match *type_info {
@@ -645,14 +647,10 @@ impl<'source> IrGenerator<'source> {
                     **field_name2 == *field_name
                 }).map(|&(_, field_type)| field_type);
                 if let Some(field_type) = field_type_option {
-                    let pointer_type = if mutable {
-                        self.compiler.type_mut(field_type)
-                    } else {
-                        self.compiler.type_ref(field_type)
-                    };
-                    let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
-                    self.instructions.push(Instruction::Field(variable_id, record_variable, field_name));
-                    variable_id
+                    let result_type = self.compiler.type_pointer(pointer_type, field_type);
+                    let result_variable = self.new_variable(Variable { typ: result_type, is_temporary: true });
+                    self.instructions.push(Instruction::Field(result_variable, record_variable, field_name));
+                    result_variable
                 } else {
                     self.compiler.report_error(Error::FieldDoesNotExist(span, typ, field_name));
                     self.generate_error()
