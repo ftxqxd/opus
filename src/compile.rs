@@ -2,11 +2,11 @@ use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
 use typed_arena::Arena;
-use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement};
+use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, BinaryOperator};
 use crate::frontend::Options;
 
 pub struct Compiler<'source> {
-    pub name_resolution_map: HashMap<&'source FunctionName<'source>, Vec<Function>>,
+    pub name_resolution_map: HashMap<Box<FunctionName<'source>>, Vec<Function>>,
     pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, Function>,
     pub has_errors: Cell<bool>,
 
@@ -79,7 +79,6 @@ pub enum Error<'source> {
     NoOverloadForFunction(&'source str, FunctionIdentifier),
     AmbiguousOverload(&'source str, FunctionIdentifier),
     UnexpectedType { span: &'source str, expected: TypeId, found: TypeId },
-    InvalidOperandTypes { span: &'source str, left: TypeId, right: TypeId },
     InvalidOperandType { span: &'source str, typ: TypeId },
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
@@ -220,6 +219,7 @@ impl<'source> fmt::Display for FunctionIdentifierPrinter<'source> {
 }
 
 #[repr(usize)]
+#[derive(Debug, Copy, Clone)]
 pub enum PrimitiveType {
     Integer8 = 0,
     Integer16,
@@ -258,8 +258,8 @@ impl<'source> Compiler<'source> {
             primitive_types[i] = TypeId(pointer);
         }
 
-        Self {
-            name_resolution_map: HashMap::with_capacity(32),
+        let mut this = Self {
+            name_resolution_map: HashMap::with_capacity(128),
             signature_resolution_map: HashMap::with_capacity(32),
             has_errors: Cell::new(false),
             expression_spans: HashMap::with_capacity(1024),
@@ -271,7 +271,77 @@ impl<'source> Compiler<'source> {
             type_resolution_map: HashMap::with_capacity(32),
             reverse_type_resolution_map: HashMap::with_capacity(32),
             primitive_types,
+        };
+
+        for &operator in &[
+            BinaryOperator::Plus,
+            BinaryOperator::Minus,
+            BinaryOperator::Times,
+            BinaryOperator::Divide,
+            BinaryOperator::Modulo,
+        ] {
+            let mut overloads = Vec::with_capacity(8);
+            let operator_name = operator.symbol();
+            let name: Box<[_]> = Box::new([None, Some(operator_name), None]);
+            for &primitive in &[
+                PrimitiveType::Integer8,
+                PrimitiveType::Integer16,
+                PrimitiveType::Integer32,
+                PrimitiveType::Integer64,
+                PrimitiveType::Natural8,
+                PrimitiveType::Natural16,
+                PrimitiveType::Natural32,
+                PrimitiveType::Natural64,
+            ] {
+                let typ = this.type_primitive(primitive);
+                let arguments = vec![typ, typ];
+                let function = Function {
+                    name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+                    arguments: arguments.into(),
+                    return_type: typ,
+                    is_extern: false,
+                };
+                overloads.push(function);
+            }
+            this.name_resolution_map.insert(name, overloads);
         }
+
+        for &operator in &[
+            BinaryOperator::Equals,
+            BinaryOperator::LessThan,
+            BinaryOperator::GreaterThan,
+            BinaryOperator::LessThanEquals,
+            BinaryOperator::GreaterThanEquals,
+        ] {
+            let mut overloads = Vec::with_capacity(8);
+            let operator_name = operator.symbol();
+            let name: Box<[_]> = Box::new([None, Some(operator_name), None]);
+            for &primitive in &[
+                PrimitiveType::Integer8,
+                PrimitiveType::Integer16,
+                PrimitiveType::Integer32,
+                PrimitiveType::Integer64,
+                PrimitiveType::Natural8,
+                PrimitiveType::Natural16,
+                PrimitiveType::Natural32,
+                PrimitiveType::Natural64,
+                PrimitiveType::Bool,
+                PrimitiveType::Null,
+            ] {
+                let typ = this.type_primitive(primitive);
+                let arguments = vec![typ, typ];
+                let function = Function {
+                    name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+                    arguments: arguments.into(),
+                    return_type: this.type_bool(),
+                    is_extern: false,
+                };
+                overloads.push(function);
+            }
+            this.name_resolution_map.insert(name, overloads);
+        }
+
+        this
     }
 
     pub fn new_type_id(&self, typ: Type) -> TypeId {
@@ -494,10 +564,6 @@ impl<'source> Compiler<'source> {
                 eprintln!("invalid type: expected {}, found {}", TypePrinter(self, expected), TypePrinter(self, found));
                 print_span(self.source, span);
             },
-            InvalidOperandTypes { span, left, right } => {
-                eprintln!("invalid operand types: {}, {}", TypePrinter(self, left), TypePrinter(self, right));
-                print_span(self.source, span);
-            },
             InvalidOperandType { span, typ } => {
                 eprintln!("invalid operand type: {}", TypePrinter(self, typ));
                 print_span(self.source, span);
@@ -618,7 +684,7 @@ impl<'source> Compiler<'source> {
                     self.report_error(Error::InvalidExternFunctionName(span, function.clone()));
                 }
 
-                self.name_resolution_map.entry(&signature.name)
+                self.name_resolution_map.entry(signature.name.clone())
                     .and_modify(|v| v.push(function.clone()))
                     .or_insert_with(|| vec![function.clone()]);
                 self.signature_resolution_map.insert(signature, function);
@@ -661,14 +727,14 @@ impl<'source> Compiler<'source> {
     ///    should be able to be ignored as far as the matching strategy is concerned.
     ///
     /// This function employs the obvious algorithm that satisfies the above properties.
-    pub fn lookup_function(&self, span: &'source str, name: &'source FunctionName<'source>, argument_types: &[TypeId]) -> Option<&Function> {
+    pub fn lookup_function(&self, span: &'source str, name: &FunctionName<'source>, argument_types: &[TypeId]) -> Option<&Function> {
         // FIXME(cleanup): this code isn't ideal and could probably be simplified & optimized
         let function_identifier = FunctionIdentifier {
             name: name.iter().map(|x| x.map(|y| y.into())).collect(),
             arguments: argument_types.into(),
         };
 
-        if let Some(functions) = self.name_resolution_map.get(&name) {
+        if let Some(functions) = self.name_resolution_map.get::<Box<_>>(&name.into()) {
             let candidates: Box<[_]> = functions.iter()
                 // Can we autocast our parameters to match this function's types?
                 .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, &y)| self.can_autocast(x, y))).collect();

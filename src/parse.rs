@@ -164,20 +164,21 @@ impl BinaryOperator {
         }
     }
 
-    pub fn is_arithmetic(&self) -> bool {
+    pub fn symbol(&self) -> &'static str {
         match *self {
-            BinaryOperator::Plus | BinaryOperator::Minus
-            | BinaryOperator::Times | BinaryOperator::Divide | BinaryOperator::Modulo => true,
-            _ => false,
-        }
-    }
+            BinaryOperator::Plus => "+",
+            BinaryOperator::Minus => "-",
+            BinaryOperator::Times => "*",
+            BinaryOperator::Divide => "/",
+            BinaryOperator::Modulo => "%",
 
-    pub fn is_comparison(&self) -> bool {
-        match *self {
-            BinaryOperator::Equals
-            | BinaryOperator::LessThan | BinaryOperator::GreaterThan
-            | BinaryOperator::LessThanEquals | BinaryOperator::GreaterThanEquals => true,
-            _ => false,
+            BinaryOperator::Equals => "=",
+            BinaryOperator::LessThan => "<",
+            BinaryOperator::GreaterThan => ">",
+            BinaryOperator::LessThanEquals => "<=",
+            BinaryOperator::GreaterThanEquals => ">=",
+
+            BinaryOperator::Cast => "::",
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::mem;
 use std::fmt;
 use std::collections::HashMap;
-use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator};
+use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator, FunctionName};
 use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, TypePrinter, FunctionPrinter};
 
 #[derive(Debug)]
@@ -361,29 +361,18 @@ impl<'source> IrGenerator<'source> {
                 new_variable_id
             },
             Expression::Call(ref name, ref arguments) => {
-                let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
-                let argument_types: Box<[_]> = argument_variables.iter().map(|&x| self.variables[x].typ).collect();
-
-                if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
-                    self.generate_error()
-                } else if let Some(function) = self.compiler.lookup_function(expression_span, name, &argument_types) {
-                    debug_assert_eq!(function.arguments.len(), arguments.len());
-
-                    for (i, (&expected_type, &found_variable)) in function.arguments.iter().zip(argument_variables.iter()).enumerate() {
-                        let span = self.compiler.expression_span(&*arguments[i]);
-                        self.autocast_variable_to_type(found_variable, expected_type, span);
-                    }
-
+                let mut argument_variables = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
+                let argument_spans = arguments.iter().map(|x| self.compiler.expression_span(x)).collect();
+                if let Some(function) = self.autocast_call_arguments(expression_span, name, &mut argument_variables, argument_spans) {
                     let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
-                    self.instructions.push(Instruction::Call(variable, function, argument_variables.into()));
+                    self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
                     variable
                 } else {
-                    // Compiler::lookup_function reports the error for us
                     self.generate_error()
                 }
             },
             Expression::BinaryOperator(operator, ref left, ref right) => {
-                let operation = match operator {
+                let instruction = match operator {
                     BinaryOperator::Plus => Instruction::Add,
                     BinaryOperator::Minus => Instruction::Subtract,
                     BinaryOperator::Times => Instruction::Multiply,
@@ -409,39 +398,23 @@ impl<'source> IrGenerator<'source> {
                     },
                 };
 
+                let name = Box::new([None, Some(operator.symbol()), None]);
+
                 let left_variable = self.generate_ir_from_expression(left);
                 let right_variable = self.generate_ir_from_expression(right);
+                let left_span = self.compiler.expression_span(left);
+                let right_span = self.compiler.expression_span(right);
 
-                let type1 = self.variables[left_variable].typ;
-                let type2 = self.variables[right_variable].typ;
-                let type_info1 = self.compiler.get_type_info(self.variables[left_variable].typ);
-                let type_info2 = self.compiler.get_type_info(self.variables[right_variable].typ);
-                let output_type = match (type_info1, type_info2) {
-                    (_, _)
-                        if self.compiler.types_match(type1, type2)
-                        && type_info1.is_integral()
-                        && operator.is_arithmetic()
-                      => type1,
-                    (_, _)
-                        if self.compiler.types_match(type1, type2)
-                        && type_info1.is_integral()
-                        && operator.is_comparison()
-                      => self.compiler.type_bool(),
-                    (_, &Type::Error) | (&Type::Error, _) => self.compiler.type_error(),
-                    (_, _) => {
-                        self.compiler.report_error(Error::InvalidOperandTypes {
-                            span: expression_span,
-                            left: type1,
-                            right: type2,
-                        });
-                        return self.generate_error()
-                    },
-                };
+                let mut argument_variables = vec![left_variable, right_variable];
+                let argument_spans = vec![left_span, right_span];
 
-                let output_variable = self.new_variable(Variable { typ: output_type, is_temporary: true });
-                self.instructions.push(operation(output_variable, left_variable, right_variable));
-
-                output_variable
+                if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
+                    let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
+                    self.instructions.push(instruction(variable, argument_variables[0], argument_variables[1]));
+                    variable
+                } else {
+                    self.generate_error()
+                }
             },
             Expression::Reference(ref subexpression) => {
                 let variable_id = self.generate_pointer_from_expression(subexpression, PointerType::Reference);
@@ -660,6 +633,26 @@ impl<'source> IrGenerator<'source> {
                 self.compiler.report_error(Error::FieldAccessOnNonRecord(span, typ));
                 self.generate_error()
             },
+        }
+    }
+
+    fn autocast_call_arguments(&mut self, span: &'source str, name: &FunctionName<'source>, argument_variables: &mut Vec<VariableId>, argument_spans: Vec<&'source str>) -> Option<&'source Function> {
+        let argument_types: Box<[_]> = argument_variables.iter().map(|&x| self.variables[x].typ).collect();
+
+        if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
+            return None
+        }
+
+        if let Some(function) = self.compiler.lookup_function(span, name, &argument_types) {
+            debug_assert_eq!(function.arguments.len(), argument_variables.len());
+
+            for (i, (&expected_type, found_variable)) in function.arguments.iter().zip(argument_variables.iter_mut()).enumerate() {
+                *found_variable = self.autocast_variable_to_type(*found_variable, expected_type, argument_spans[i]);
+            }
+
+            Some(function)
+        } else {
+            None
         }
     }
 }
