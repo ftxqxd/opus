@@ -418,10 +418,8 @@ impl<'source> Compiler<'source> {
                     return false
                 }
 
-                for &(ref field_name1, field_type1) in fields1.iter() {
-                    if fields2.iter().find(|&&(ref field_name2, field_type2)| {
-                        field_name1 == field_name2 && self.types_match(field_type1, field_type2)
-                    }).is_none() {
+                for (&(ref field_name1, field_type1), &(ref field_name2, field_type2)) in fields1.iter().zip(fields2.iter()) {
+                    if field_name1 != field_name2 || !self.types_match(field_type1, field_type2) {
                         return false
                     }
                 }
