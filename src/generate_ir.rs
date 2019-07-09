@@ -383,19 +383,6 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::GreaterThan => Instruction::GreaterThan,
                     BinaryOperator::LessThanEquals => Instruction::LessThanEquals,
                     BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
-                    BinaryOperator::Cast => {
-                        let variable_id = self.generate_ir_from_expression(left);
-                        let old_type = self.variables[variable_id].typ;
-                        let typ = self.compiler.resolve_type(right);
-                        if self.compiler.can_cast(old_type, typ) {
-                            let new_variable_id = self.new_variable(Variable { typ, is_temporary: true });
-                            self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
-                            return new_variable_id
-                        } else {
-                            self.compiler.report_error(Error::InvalidCast { span: expression_span, from: old_type.clone(), to: typ });
-                            return self.generate_error()
-                        }
-                    },
                 };
 
                 let name = Box::new([None, Some(operator.symbol()), None]);
@@ -409,10 +396,29 @@ impl<'source> IrGenerator<'source> {
                 let argument_spans = vec![left_span, right_span];
 
                 if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
-                    let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
-                    self.instructions.push(instruction(variable, argument_variables[0], argument_variables[1]));
-                    variable
+                    if function.is_builtin {
+                        let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
+                        self.instructions.push(instruction(variable, argument_variables[0], argument_variables[1]));
+                        variable
+                    } else {
+                        let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
+                        self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
+                        variable
+                    }
                 } else {
+                    self.generate_error()
+                }
+            },
+            Expression::Cast(ref subexpression, ref type_expression) => {
+                let variable_id = self.generate_ir_from_expression(subexpression);
+                let old_type = self.variables[variable_id].typ;
+                let typ = self.compiler.resolve_type(type_expression);
+                if self.compiler.can_cast(old_type, typ) {
+                    let new_variable_id = self.new_variable(Variable { typ, is_temporary: true });
+                    self.instructions.push(Instruction::Cast(new_variable_id, variable_id));
+                    new_variable_id
+                } else {
+                    self.compiler.report_error(Error::InvalidCast { span: expression_span, from: old_type.clone(), to: typ });
                     self.generate_error()
                 }
             },

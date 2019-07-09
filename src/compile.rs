@@ -59,6 +59,7 @@ pub struct Function {
     pub arguments: Box<[TypeId]>,
     pub return_type: TypeId,
     pub is_extern: bool,
+    pub is_builtin: bool,
 }
 
 /// A function name together with its argument types.
@@ -300,6 +301,7 @@ impl<'source> Compiler<'source> {
                     arguments: arguments.into(),
                     return_type: typ,
                     is_extern: false,
+                    is_builtin: true,
                 };
                 overloads.push(function);
             }
@@ -335,6 +337,7 @@ impl<'source> Compiler<'source> {
                     arguments: arguments.into(),
                     return_type: this.type_bool(),
                     is_extern: false,
+                    is_builtin: true,
                 };
                 overloads.push(function);
             }
@@ -672,7 +675,7 @@ impl<'source> Compiler<'source> {
                     false
                 };
 
-                let function = Function { name, arguments, return_type, is_extern };
+                let function = Function { name, arguments, return_type, is_extern, is_builtin: false };
 
                 if is_extern
                 && (signature.name.len() == 0

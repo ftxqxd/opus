@@ -127,7 +127,6 @@ pub enum BinaryOperator {
     GreaterThan,
     LessThanEquals,
     GreaterThanEquals,
-    Cast,
 }
 
 impl BinaryOperator {
@@ -143,7 +142,6 @@ impl BinaryOperator {
             Token::GreaterThan => Some(BinaryOperator::GreaterThan),
             Token::LessThanEquals => Some(BinaryOperator::LessThanEquals),
             Token::GreaterThanEquals => Some(BinaryOperator::GreaterThanEquals),
-            Token::T_PAAMAYIM_NEKUDOTAYIM => Some(BinaryOperator::Cast),
             _ => None,
         }
     }
@@ -160,7 +158,6 @@ impl BinaryOperator {
             BinaryOperator::Times => 31,
             BinaryOperator::Divide => 31,
             BinaryOperator::Modulo => 31,
-            BinaryOperator::Cast => 40,
         }
     }
 
@@ -177,8 +174,6 @@ impl BinaryOperator {
             BinaryOperator::GreaterThan => ">",
             BinaryOperator::LessThanEquals => "<=",
             BinaryOperator::GreaterThanEquals => ">=",
-
-            BinaryOperator::Cast => "::",
         }
     }
 }
@@ -201,6 +196,7 @@ pub enum Expression<'source> {
     Dereference(Box<Expression<'source>>),
     Field(&'source str, Box<Expression<'source>>),
     Index(Box<Expression<'source>>, Box<Expression<'source>>),
+    Cast(Box<Expression<'source>>, Box<Expression<'source>>),
     Negate(Box<Expression<'source>>),
     Parentheses(Box<Expression<'source>>),
 }
@@ -840,6 +836,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     expression_box = Box::new(Expression::Record(expression_box, fields.into()));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
+                Token::T_PAAMAYIM_NEKUDOTAYIM => {
+                    let _ = self.parse_token();
+                    let typ = self.parse_atom()?;
+                    expression_box = Box::new(Expression::Cast(expression_box, typ));
+                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                },
                 _ => break,
             }
         }
@@ -858,7 +860,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 match self.peek_token()? {
                     Token::Colon => {
                         let _ = self.parse_token();
-                        let typ = self.parse_expression()?;
+                        let typ = self.parse_atom()?;
                         let left_span = &self.source[low..self.position];
 
                         match self.peek_token()? {
@@ -978,7 +980,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let name = self.parse_lowercase_identifier()?;
                 self.expect(&Token::ColonEquals)?;
-                let typ = self.parse_expression()?;
+                let typ = self.parse_atom()?;
                 span = &self.source[low..self.position];
 
                 Definition::Type(name, typ)
@@ -996,7 +998,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     }
                     let field_name = self.parse_lowercase_identifier()?;
                     self.expect(&Token::Colon)?;
-                    let field_type = self.parse_expression()?;
+                    let field_type = self.parse_atom()?;
                     fields.push((field_name, field_type));
                 }
                 span = &self.source[low..self.position];
@@ -1032,9 +1034,13 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Token::UppercaseIdentifier(part) => {
                     name.push(Some(part));
                 },
+                ref t if BinaryOperator::from_token(t).is_some() => {
+                    let operator = BinaryOperator::from_token(t).unwrap();
+                    name.push(Some(operator.symbol()));
+                },
                 Token::LowercaseIdentifier(identifier) => {
                     self.expect(&Token::Colon)?;
-                    let typ = self.parse_expression()?;
+                    let typ = self.parse_atom()?;
                     name.push(None);
                     arguments.push((identifier, typ));
                 },
@@ -1048,7 +1054,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         self.ignore_dents -= 1;
 
         self.expect(&Token::Colon)?;
-        let return_type = self.parse_expression()?;
+        let return_type = self.parse_atom()?;
 
         Ok(FunctionSignature {
             name: name.into(),

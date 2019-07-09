@@ -224,7 +224,8 @@ fn mangle_function_name<W: Write>(compiler: &Compiler, function: &Function, outp
         for part in function.name.iter() {
             match *part {
                 Some(ref x) => {
-                    write!(output, "_{}", x)?;
+                    write!(output, "_")?;
+                    mangle_symbol(output, x)?;
                 },
                 None => {
                     write!(output, "__")?;
@@ -236,6 +237,22 @@ fn mangle_function_name<W: Write>(compiler: &Compiler, function: &Function, outp
     }
 
     Ok(())
+}
+
+fn mangle_symbol<W: Write>(output: &mut W, x: &str) -> io::Result<()> {
+    write!(output, "{}", match x {
+        "+" => "Plus",
+        "-" => "Minus",
+        "*" => "Times",
+        "/" => "Divide",
+        "%" => "Modulo",
+        "=" => "Equals",
+        "<" => "LessThan",
+        ">" => "GreaterThan",
+        "<=" => "LessThanEquals",
+        ">=" => "GreaterThanEquals",
+        _ => x,
+    })
 }
 
 fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) -> io::Result<()> {
