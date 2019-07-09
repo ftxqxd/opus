@@ -523,7 +523,7 @@ impl<'source> Compiler<'source> {
                 print_span(self.source, span);
             },
             FieldAccessOnNonRecord(span, typ) => {
-                eprintln!("attempt to access field of non-record: {}", TypePrinter(self, typ));
+                eprintln!("attempt to set or access field of non-record: {}", TypePrinter(self, typ));
                 print_span(self.source, span);
             },
             FieldDoesNotExist(span, typ, field_name) => {

@@ -8,6 +8,8 @@ pub enum Token<'source> {
     RightParenthesis,
     LeftSquareBracket,
     RightSquareBracket,
+    LeftBrace,
+    RightBrace,
     Colon,
     ColonEquals,
     #[allow(non_camel_case_types)]
@@ -60,6 +62,8 @@ impl<'source> fmt::Display for Token<'source> {
             RightParenthesis => ")",
             LeftSquareBracket => "[",
             RightSquareBracket => "]",
+            LeftBrace => "{",
+            RightBrace => "}",
             Colon => ":",
             ColonEquals => "←",
             T_PAAMAYIM_NEKUDOTAYIM => "::",
@@ -187,6 +191,7 @@ pub enum Expression<'source> {
     Variable(&'source str),
     VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
+    Record(Box<Expression<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
     MutableReference(Box<Expression<'source>>),
@@ -425,6 +430,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some(')') => Ok(Token::RightParenthesis),
             Some('[') => Ok(Token::LeftSquareBracket),
             Some(']') => Ok(Token::RightSquareBracket),
+            Some('{') => Ok(Token::LeftBrace),
+            Some('}') => Ok(Token::RightBrace),
             Some('←') => Ok(Token::ColonEquals),
             Some(':') => {
                 match self.peek() {
@@ -651,13 +658,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
     fn parse_expression(&mut self) -> Result<'source, Box<Expression<'source>>> {
         let left = self.parse_atom()?;
+
+        let left_span = self.compiler.expression_span(&left);
+        let low = self.string_low(left_span);
+
         let operator_token = self.peek_token()?;
         if let Some(operator) = BinaryOperator::from_token(&operator_token) {
             let _ = self.parse_token()?;
             let right = self.parse_expression()?;
-
-            let left_span = self.compiler.expression_span(&left);
-            let low = self.string_low(left_span);
 
             let mut boxed_expression = Box::new(Expression::BinaryOperator(operator, left, right));
             self.correct_precedence(&mut *boxed_expression);
@@ -803,9 +811,32 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 },
                 Token::LeftSquareBracket => {
                     let _ = self.parse_token();
+                    self.ignore_dents += 1;
                     let index = self.parse_expression()?;
                     self.expect(&Token::RightSquareBracket)?;
+                    self.ignore_dents -= 1;
                     expression_box = Box::new(Expression::Index(expression_box, index));
+                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                },
+                Token::LeftBrace => {
+                    let _ = self.parse_token();
+                    self.ignore_dents += 1;
+                    let mut fields = vec![];
+                    loop {
+                        match self.parse_token()? {
+                            Token::LowercaseIdentifier(field_name) => {
+                                self.expect(&Token::ColonEquals)?;
+                                let value = self.parse_expression()?;
+                                fields.push((field_name, value));
+                            },
+                            Token::RightBrace => break,
+                            token => {
+                                return Err(Error::UnexpectedToken(&self.source[self.token_low..self.position], token))
+                            }
+                        }
+                    }
+                    self.ignore_dents -= 1;
+                    expression_box = Box::new(Expression::Record(expression_box, fields.into()));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
                 _ => break,

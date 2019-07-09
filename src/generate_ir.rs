@@ -351,7 +351,7 @@ impl<'source> IrGenerator<'source> {
                 variable_id
             },
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
-            | Expression::Field(..) | Expression::Index(..) => {
+            | Expression::Field(..) | Expression::Index(..) | Expression::Record(..) => {
                 let pointer_variable_id = self.generate_pointer_from_expression(expression, false);
                 let typ = self.get_lvalue_type(pointer_variable_id);
                 let new_variable_id = self.new_variable(Variable {
@@ -575,32 +575,7 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Field(field_name, ref subexpression) => {
                 let record_variable = self.generate_pointer_from_expression(subexpression, mutable);
-                let typ = self.get_lvalue_type(record_variable);
-                let type_info = self.compiler.get_type_info(typ);
-                match *type_info {
-                    Type::Record { ref fields, .. } => {
-                        let field_type_option = fields.iter().find(|&&(ref field_name2, _)| {
-                            **field_name2 == *field_name
-                        }).map(|&(_, field_type)| field_type);
-                        if let Some(field_type) = field_type_option {
-                            let pointer_type = if mutable {
-                                self.compiler.type_mut(field_type)
-                            } else {
-                                self.compiler.type_ref(field_type)
-                            };
-                            let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
-                            self.instructions.push(Instruction::Field(variable_id, record_variable, field_name));
-                            variable_id
-                        } else {
-                            self.compiler.report_error(Error::FieldDoesNotExist(span, typ, field_name));
-                            self.generate_error()
-                        }
-                    },
-                    _ => {
-                        self.compiler.report_error(Error::FieldAccessOnNonRecord(span, typ));
-                        self.generate_error()
-                    },
-                }
+                self.generate_ir_for_field_access(record_variable, field_name, mutable, span)
             },
             Expression::Index(ref array_expression, ref index_expression) => {
                 let array_variable = self.generate_ir_from_expression(array_expression);
@@ -637,11 +612,54 @@ impl<'source> IrGenerator<'source> {
                     },
                 }
             },
+            Expression::Record(ref type_expression, ref fields) => {
+                let typ = self.compiler.type_mut(self.compiler.resolve_type(type_expression));
+                let output_variable = self.new_variable(Variable { typ, is_temporary: true });
+                self.instructions.push(Instruction::Allocate(output_variable));
+
+                for &(name, ref value) in fields.iter() {
+                    let value_variable = self.generate_ir_from_expression(value);
+                    let span = self.compiler.expression_span(value);
+                    let field_variable = self.generate_ir_for_field_access(output_variable, name, true, span);
+                    self.instructions.push(Instruction::Store(field_variable, value_variable));
+                }
+
+                output_variable
+            },
             Expression::Parentheses(ref subexpression) => {
                 self.generate_pointer_from_expression(subexpression, mutable)
             },
             _ => {
                 self.compiler.report_error(Error::InvalidLvalue(span));
+                self.generate_error()
+            },
+        }
+    }
+
+    fn generate_ir_for_field_access(&mut self, record_variable: VariableId, field_name: &'source str, mutable: bool, span: &'source str) -> VariableId {
+        let typ = self.get_lvalue_type(record_variable);
+        let type_info = self.compiler.get_type_info(typ);
+        match *type_info {
+            Type::Record { ref fields, .. } => {
+                let field_type_option = fields.iter().find(|&&(ref field_name2, _)| {
+                    **field_name2 == *field_name
+                }).map(|&(_, field_type)| field_type);
+                if let Some(field_type) = field_type_option {
+                    let pointer_type = if mutable {
+                        self.compiler.type_mut(field_type)
+                    } else {
+                        self.compiler.type_ref(field_type)
+                    };
+                    let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
+                    self.instructions.push(Instruction::Field(variable_id, record_variable, field_name));
+                    variable_id
+                } else {
+                    self.compiler.report_error(Error::FieldDoesNotExist(span, typ, field_name));
+                    self.generate_error()
+                }
+            },
+            _ => {
+                self.compiler.report_error(Error::FieldAccessOnNonRecord(span, typ));
                 self.generate_error()
             },
         }
