@@ -116,6 +116,14 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeI
             translate_type_to_c(compiler, output, subtype)?;
             write!(output, " *")
         },
+        Type::ArrayReference(subtype) => {
+            translate_type_to_c(compiler, output, subtype)?;
+            write!(output, " const *")
+        },
+        Type::MutableArrayReference(subtype) => {
+            translate_type_to_c(compiler, output, subtype)?;
+            write!(output, " *")
+        },
         Type::Record { ref name, .. } => {
             write!(output, "struct {}", name)
         },
@@ -167,13 +175,13 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Load(destination, source) => writeln!(output, "var{} = *var{};", destination, source)?,
         Instruction::Store(destination, source) => writeln!(output, "*var{} = var{};", destination, source)?,
         Instruction::Field(destination, source, field_name) => writeln!(output, "var{} = &var{}->{};", destination, source, field_name)?,
+        Instruction::Index(destination, source, index) => writeln!(output, "var{} = &var{}[var{}];", destination, source, index)?,
 
         Instruction::Add(destination, left, right) => writeln!(output, "var{} = var{} + var{};", destination, left, right)?,
         Instruction::Subtract(destination, left, right) => writeln!(output, "var{} = var{} - var{};", destination, left, right)?,
         Instruction::Multiply(destination, left, right) => writeln!(output, "var{} = var{} * var{};", destination, left, right)?,
         Instruction::Divide(destination, left, right) => writeln!(output, "var{} = var{} / var{};", destination, left, right)?,
         Instruction::Modulo(destination, left, right) => writeln!(output, "var{} = var{} % var{};", destination, left, right)?,
-        Instruction::Offset(destination, left, right) => writeln!(output, "var{} = var{} + var{};", destination, left, right)?,
         Instruction::Equals(destination, left, right) => writeln!(output, "var{} = var{} == var{};", destination, left, right)?,
         Instruction::LessThan(destination, left, right) => writeln!(output, "var{} = var{} < var{};", destination, left, right)?,
         Instruction::GreaterThan(destination, left, right) => writeln!(output, "var{} = var{} > var{};", destination, left, right)?,
@@ -258,6 +266,14 @@ fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) 
         },
         Type::MutableReference(subtype) => {
             write!(output, "MutableReferenceTo")?;
+            mangle_type_name(compiler, subtype, output)
+        },
+        Type::ArrayReference(subtype) => {
+            write!(output, "ArrayReferenceTo")?;
+            mangle_type_name(compiler, subtype, output)
+        },
+        Type::MutableArrayReference(subtype) => {
+            write!(output, "MutableArrayReferenceTo")?;
             mangle_type_name(compiler, subtype, output)
         },
         Type::Record { ref name, .. } => {

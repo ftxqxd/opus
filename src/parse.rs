@@ -6,6 +6,8 @@ use crate::compile::Compiler;
 pub enum Token<'source> {
     LeftParenthesis,
     RightParenthesis,
+    LeftSquareBracket,
+    RightSquareBracket,
     Colon,
     ColonEquals,
     #[allow(non_camel_case_types)]
@@ -20,7 +22,6 @@ pub enum Token<'source> {
     Asterisk,
     Slash,
     Percent,
-    PlusPlus,
     At,
     Tilde,
     Dot,
@@ -40,6 +41,8 @@ pub enum Token<'source> {
     Extern,
     Ref,
     Mut,
+    Refs,
+    Muts,
     Null,
     False,
     True,
@@ -55,6 +58,8 @@ impl<'source> fmt::Display for Token<'source> {
         formatter.write_str(match *self {
             LeftParenthesis => "(",
             RightParenthesis => ")",
+            LeftSquareBracket => "[",
+            RightSquareBracket => "]",
             Colon => ":",
             ColonEquals => "←",
             T_PAAMAYIM_NEKUDOTAYIM => "::",
@@ -64,7 +69,6 @@ impl<'source> fmt::Display for Token<'source> {
             LessThanEquals => "<=",
             GreaterThanEquals => ">=",
             Plus => "+",
-            PlusPlus => "++",
             Minus => "-",
             Asterisk => "*",
             Slash => "/",
@@ -94,6 +98,8 @@ impl<'source> fmt::Display for Token<'source> {
             Extern => "extern",
             Ref => "ref",
             Mut => "mut",
+            Refs => "refs",
+            Muts => "muts",
             Null => "null",
             False => "false",
             True => "true",
@@ -112,7 +118,6 @@ pub enum BinaryOperator {
     Times,
     Divide,
     Modulo,
-    Offset,
     Equals,
     LessThan,
     GreaterThan,
@@ -129,7 +134,6 @@ impl BinaryOperator {
             Token::Asterisk => Some(BinaryOperator::Times),
             Token::Slash => Some(BinaryOperator::Divide),
             Token::Percent => Some(BinaryOperator::Modulo),
-            Token::PlusPlus => Some(BinaryOperator::Offset),
             Token::Equals => Some(BinaryOperator::Equals),
             Token::LessThan => Some(BinaryOperator::LessThan),
             Token::GreaterThan => Some(BinaryOperator::GreaterThan),
@@ -149,7 +153,6 @@ impl BinaryOperator {
             BinaryOperator::GreaterThanEquals => 20,
             BinaryOperator::Plus => 30,
             BinaryOperator::Minus => 30,
-            BinaryOperator::Offset => 30,
             BinaryOperator::Times => 31,
             BinaryOperator::Divide => 31,
             BinaryOperator::Modulo => 31,
@@ -187,8 +190,11 @@ pub enum Expression<'source> {
     BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
     MutableReference(Box<Expression<'source>>),
+    ArrayReference(Box<Expression<'source>>),
+    MutableArrayReference(Box<Expression<'source>>),
     Dereference(Box<Expression<'source>>),
     Field(&'source str, Box<Expression<'source>>),
+    Index(Box<Expression<'source>>, Box<Expression<'source>>),
     Negate(Box<Expression<'source>>),
     Parentheses(Box<Expression<'source>>),
 }
@@ -417,6 +423,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         match self.advance() {
             Some('(') => Ok(Token::LeftParenthesis),
             Some(')') => Ok(Token::RightParenthesis),
+            Some('[') => Ok(Token::LeftSquareBracket),
+            Some(']') => Ok(Token::RightSquareBracket),
             Some('←') => Ok(Token::ColonEquals),
             Some(':') => {
                 match self.peek() {
@@ -450,15 +458,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     _ => Ok(Token::GreaterThan),
                 }
             },
-            Some('+') => {
-                match self.peek() {
-                    Some('+') => {
-                        self.advance();
-                        Ok(Token::PlusPlus)
-                    },
-                    _ => Ok(Token::Plus),
-                }
-            },
+            Some('+') => Ok(Token::Plus),
             Some('-') => Ok(Token::Minus),
             Some('*') => Ok(Token::Asterisk),
             Some('/') => Ok(Token::Slash),
@@ -547,6 +547,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "extern" => Ok(Token::Extern),
                     "ref" => Ok(Token::Ref),
                     "mut" => Ok(Token::Mut),
+                    "refs" => Ok(Token::Refs),
+                    "muts" => Ok(Token::Muts),
                     "null" => Ok(Token::Null),
                     "false" => Ok(Token::False),
                     "true" => Ok(Token::True),
@@ -754,6 +756,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let subexpression = self.parse_atom()?;
                 Expression::MutableReference(subexpression)
             },
+            Token::Refs => {
+                let subexpression = self.parse_atom()?;
+                Expression::ArrayReference(subexpression)
+            },
+            Token::Muts => {
+                let subexpression = self.parse_atom()?;
+                Expression::MutableArrayReference(subexpression)
+            },
             Token::Var => {
                 let variable_name = self.parse_lowercase_identifier()?;
                 self.expect(&Token::Colon)?;
@@ -789,6 +799,13 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     let _ = self.parse_token();
                     let field_name = self.parse_lowercase_identifier()?;
                     expression_box = Box::new(Expression::Field(field_name, expression_box));
+                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                },
+                Token::LeftSquareBracket => {
+                    let _ = self.parse_token();
+                    let index = self.parse_expression()?;
+                    self.expect(&Token::RightSquareBracket)?;
+                    expression_box = Box::new(Expression::Index(expression_box, index));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
                 _ => break,

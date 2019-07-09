@@ -39,6 +39,8 @@ pub enum Type {
     Null,
     Reference(TypeId),
     MutableReference(TypeId),
+    ArrayReference(TypeId),
+    MutableArrayReference(TypeId),
     Record {
         name: Box<str>,
         fields: Box<[(Box<str>, TypeId)]>,
@@ -84,6 +86,7 @@ pub enum Error<'source> {
     UndefinedType(&'source str),
     FieldAccessOnNonRecord(&'source str, TypeId),
     FieldDoesNotExist(&'source str, TypeId, &'source str),
+    ExpectedExpressionFoundType(&'source str),
 }
 
 impl Type {
@@ -130,6 +133,14 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             },
             Type::MutableReference(subtype) => {
                 write!(formatter, "mut {}", TypePrinter(self.0, subtype))?;
+                ""
+            },
+            Type::ArrayReference(subtype) => {
+                write!(formatter, "refs {}", TypePrinter(self.0, subtype))?;
+                ""
+            },
+            Type::MutableArrayReference(subtype) => {
+                write!(formatter, "muts {}", TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Record { ref name, .. } => {
@@ -300,6 +311,14 @@ impl<'source> Compiler<'source> {
         self.new_type_id(Type::MutableReference(other))
     }
 
+    pub fn type_refs(&self, other: TypeId) -> TypeId {
+        self.new_type_id(Type::ArrayReference(other))
+    }
+
+    pub fn type_muts(&self, other: TypeId) -> TypeId {
+        self.new_type_id(Type::MutableArrayReference(other))
+    }
+
     pub fn can_autocast(&self, from: TypeId, to: TypeId) -> bool {
         if self.types_match(from, to) {
             return true
@@ -334,8 +353,10 @@ impl<'source> Compiler<'source> {
             | (&Type::Natural16, &Type::Integer32)
             | (&Type::Natural8, &Type::Integer16)
               => true,
-            // mut -> ref
-            (&Type::MutableReference(typ1), &Type::Reference(typ2)) if self.types_match(typ1, typ2)
+            // mut -> ref, muts -> refs
+            (&Type::MutableReference(typ1), &Type::Reference(typ2))
+            | (&Type::MutableArrayReference(typ1), &Type::ArrayReference(typ2))
+                if self.types_match(typ1, typ2)
               => true,
             _ => false,
         }
@@ -370,12 +391,10 @@ impl<'source> Compiler<'source> {
             (&Type::Natural64, &Type::Natural64) => true,
             (&Type::Bool, &Type::Bool) => true,
             (&Type::Null, &Type::Null) => true,
-            (&Type::Reference(subtype1), &Type::Reference(subtype2)) => {
-                self.types_match(subtype1, subtype2)
-            },
-            (&Type::MutableReference(subtype1), &Type::MutableReference(subtype2)) => {
-                self.types_match(subtype1, subtype2)
-            },
+            (&Type::Reference(subtype1), &Type::Reference(subtype2)) => self.types_match(subtype1, subtype2),
+            (&Type::MutableReference(subtype1), &Type::MutableReference(subtype2)) => self.types_match(subtype1, subtype2),
+            (&Type::ArrayReference(subtype1), &Type::ArrayReference(subtype2)) => self.types_match(subtype1, subtype2),
+            (&Type::MutableArrayReference(subtype1), &Type::MutableArrayReference(subtype2)) => self.types_match(subtype1, subtype2),
             (&Type::Record { name: ref name1, fields: ref fields1 }, &Type::Record { name: ref name2, fields: ref fields2 }) => {
                 if name1 != name2 {
                     return false
@@ -511,6 +530,10 @@ impl<'source> Compiler<'source> {
                 eprintln!("type {} has no field named '{}'", TypePrinter(self, typ), field_name);
                 print_span(self.source, span);
             },
+            ExpectedExpressionFoundType(span) => {
+                eprintln!("expected expression, found type");
+                print_span(self.source, span);
+            },
         }
     }
 
@@ -537,6 +560,8 @@ impl<'source> Compiler<'source> {
             Expression::Null => self.type_null(),
             Expression::Reference(ref subexpression) => self.type_ref(self.resolve_type(subexpression)),
             Expression::MutableReference(ref subexpression) => self.type_mut(self.resolve_type(subexpression)),
+            Expression::ArrayReference(ref subexpression) => self.type_refs(self.resolve_type(subexpression)),
+            Expression::MutableArrayReference(ref subexpression) => self.type_muts(self.resolve_type(subexpression)),
             _ => {
                 self.report_error(Error::UndefinedType(span));
                 self.type_error()

@@ -17,13 +17,13 @@ pub enum Instruction<'source> {
     Load(VariableId, VariableId),
     Store(VariableId, VariableId),
     Field(VariableId, VariableId, &'source str),
+    Index(VariableId, VariableId, VariableId),
 
     Add(VariableId, VariableId, VariableId),
     Subtract(VariableId, VariableId, VariableId),
     Multiply(VariableId, VariableId, VariableId),
     Divide(VariableId, VariableId, VariableId),
     Modulo(VariableId, VariableId, VariableId),
-    Offset(VariableId, VariableId, VariableId),
     Equals(VariableId, VariableId, VariableId),
     LessThan(VariableId, VariableId, VariableId),
     GreaterThan(VariableId, VariableId, VariableId),
@@ -345,13 +345,13 @@ impl<'source> IrGenerator<'source> {
                 variable_id
             },
             Expression::String(ref bytes) => {
-                let typ = self.compiler.type_ref(self.compiler.type_primitive(PrimitiveType::Natural8));
+                let typ = self.compiler.type_refs(self.compiler.type_primitive(PrimitiveType::Natural8));
                 let variable_id = self.new_variable(Variable { typ, is_temporary: true });
                 self.instructions.push(Instruction::String(variable_id, bytes.clone()));
                 variable_id
             },
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
-            | Expression::Field(..) => {
+            | Expression::Field(..) | Expression::Index(..) => {
                 let pointer_variable_id = self.generate_pointer_from_expression(expression, false);
                 let typ = self.get_lvalue_type(pointer_variable_id);
                 let new_variable_id = self.new_variable(Variable {
@@ -390,7 +390,6 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::Times => Instruction::Multiply,
                     BinaryOperator::Divide => Instruction::Divide,
                     BinaryOperator::Modulo => Instruction::Modulo,
-                    BinaryOperator::Offset => Instruction::Offset,
                     BinaryOperator::Equals => Instruction::Equals,
                     BinaryOperator::LessThan => Instruction::LessThan,
                     BinaryOperator::GreaterThan => Instruction::GreaterThan,
@@ -429,9 +428,6 @@ impl<'source> IrGenerator<'source> {
                         && type_info1.is_integral()
                         && operator.is_comparison()
                       => self.compiler.type_bool(),
-                    (&Type::Reference(_), _) | (&Type::MutableReference(_), _)
-                        if type_info2.is_integral() && operator == BinaryOperator::Offset
-                      => type1,
                     (_, &Type::Error) | (&Type::Error, _) => self.compiler.type_error(),
                     (_, _) => {
                         self.compiler.report_error(Error::InvalidOperandTypes {
@@ -483,6 +479,10 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Parentheses(ref subexpression) => {
                 self.generate_ir_from_expression(subexpression)
+            },
+            Expression::ArrayReference(..) | Expression::MutableArrayReference(..) => {
+                self.compiler.report_error(Error::ExpectedExpressionFoundType(expression_span));
+                self.generate_error()
             },
         }
     }
@@ -602,6 +602,41 @@ impl<'source> IrGenerator<'source> {
                     },
                 }
             },
+            Expression::Index(ref array_expression, ref index_expression) => {
+                let array_variable = self.generate_ir_from_expression(array_expression);
+                let index_variable = self.generate_ir_from_expression(index_expression);
+
+                let index_span = self.compiler.expression_span(index_expression);
+                // FIXME: should be a type like natsize instead of nat64
+                let index_variable = self.autocast_variable_to_type(index_variable, self.compiler.type_primitive(PrimitiveType::Natural64), index_span);
+
+                let array_span = self.compiler.expression_span(array_expression);
+                let array_typ = self.variables[array_variable].typ;
+                let array_type_info = self.compiler.get_type_info(array_typ);
+
+                match *array_type_info {
+                    Type::ArrayReference(subtype) | Type::MutableArrayReference(subtype) if !mutable => {
+                        let pointer_type = self.compiler.type_ref(subtype);
+                        let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
+                        self.instructions.push(Instruction::Index(variable_id, array_variable, index_variable));
+                        variable_id
+                    },
+                    Type::MutableArrayReference(subtype) if mutable => {
+                        let pointer_type = self.compiler.type_mut(subtype);
+                        let variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: true });
+                        self.instructions.push(Instruction::Index(variable_id, array_variable, index_variable));
+                        variable_id
+                    },
+                    Type::ArrayReference(_) if mutable => {
+                        self.compiler.report_error(Error::ImmutableLvalue(array_span));
+                        self.generate_error()
+                    },
+                    _ => {
+                        self.compiler.report_error(Error::InvalidOperandType { span: array_span, typ: array_typ });
+                        self.generate_error()
+                    },
+                }
+            },
             Expression::Parentheses(ref subexpression) => {
                 self.generate_pointer_from_expression(subexpression, mutable)
             },
@@ -647,13 +682,13 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Load(destination, source) => write!(f, "%{} = load %{}", destination, source)?,
                 Instruction::Store(destination, source) => write!(f, "in %{} store %{}", destination, source)?,
                 Instruction::Field(destination, source, field_name) => write!(f, "%{} = fieldptr %{}, {}", destination, source, field_name)?,
+                Instruction::Index(destination, source, index) => write!(f, "%{} = indexptr %{}, %{}", destination, source, index)?,
 
                 Instruction::Add(variable1, variable2, variable3) => write!(f, "%{} = add %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Multiply(variable1, variable2, variable3) => write!(f, "%{} = multiply %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Divide(variable1, variable2, variable3) => write!(f, "%{} = divide %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Modulo(variable1, variable2, variable3) => write!(f, "%{} = modulo %{}, %{}", variable1, variable2, variable3)?,
-                Instruction::Offset(variable1, variable2, variable3) => write!(f, "%{} = offset %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::Equals(variable1, variable2, variable3) => write!(f, "%{} = equals %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::LessThan(variable1, variable2, variable3) => write!(f, "%{} = lessthan %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::GreaterThan(variable1, variable2, variable3) => write!(f, "%{} = greaterthan %{}, %{}", variable1, variable2, variable3)?,
