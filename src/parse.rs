@@ -51,6 +51,8 @@ pub enum Token<'source> {
     Type,
     Record,
     Is,
+    And,
+    Or,
     Not,
     EndOfFile,
 }
@@ -115,6 +117,8 @@ impl<'source> fmt::Display for Token<'source> {
             True => "true",
             Type => "type",
             Is => "is",
+            And => "and",
+            Or => "or",
             Not => "not",
             Record => "record",
             EndOfFile => "<end of file>",
@@ -136,6 +140,8 @@ pub enum Operator {
     LessThanEquals,
     GreaterThanEquals,
     Is,
+    And,
+    Or,
     Not,
 }
 
@@ -153,6 +159,8 @@ impl Operator {
             Token::LessThanEquals => Some(Operator::LessThanEquals),
             Token::GreaterThanEquals => Some(Operator::GreaterThanEquals),
             Token::Is => Some(Operator::Is),
+            Token::And => Some(Operator::And),
+            Token::Or => Some(Operator::Or),
             _ => None,
         }
     }
@@ -166,6 +174,9 @@ impl Operator {
 
     fn precedence(&self) -> Precedence {
         match *self {
+            Operator::Or => 0,
+            Operator::And => 1,
+            Operator::Not => 2,
             Operator::Equals => 20,
             Operator::LessThan => 20,
             Operator::GreaterThan => 20,
@@ -177,7 +188,6 @@ impl Operator {
             Operator::Times => 31,
             Operator::Divide => 31,
             Operator::Modulo => 31,
-            Operator::Not => 2,
         }
     }
 
@@ -196,6 +206,8 @@ impl Operator {
             Operator::GreaterThanEquals => ">=",
             Operator::Is => "is",
 
+            Operator::And => "and",
+            Operator::Or => "or",
             Operator::Not => "not",
         }
     }
@@ -589,6 +601,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "type" => Ok(Token::Type),
                     "record" => Ok(Token::Record),
                     "is" => Ok(Token::Is),
+                    "and" => Ok(Token::And),
+                    "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
@@ -819,7 +833,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Not => {
                 // We treat unary operators as binary operators which ignore their first argument
                 let subexpression = self.parse_expression()?;
-                let mut expression_box = Box::new(Expression::Operator(Operator::Not, Box::new(Expression::Null), subexpression));
+
+                let null_box = Box::new(Expression::Null);
+                self.compiler.expression_spans.insert(&*null_box, &self.source[low..low]);
+
+                let mut expression_box = Box::new(Expression::Operator(Operator::Not, null_box, subexpression));
                 self.correct_precedence(&mut *expression_box);
                 self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 return Ok(expression_box)
@@ -1074,7 +1092,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Token::UppercaseIdentifier(part) => {
                     name.push(Some(part));
                 },
-                ref t if Operator::binary_from_token(t).is_some() => {
+                ref t if Operator::binary_from_token(t).is_some() && *t != Token::And && *t != Token::Or => {
                     let operator = Operator::binary_from_token(t).unwrap();
                     name.push(Some(operator.symbol()));
                 },

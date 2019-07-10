@@ -60,6 +60,7 @@ pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Resu
         translate_type_to_c(&ir.compiler, output, variable.typ)?;
         write!(output, " var{};\n", i)?;
     }
+    writeln!(output, "\tint last_instruction;")?;
 
     // Write instructions
     for instruction_index in 0..ir.instructions.len() {
@@ -125,8 +126,15 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeI
 }
 
 fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instruction_index: usize) -> io::Result<()> {
-    write!(output, "i{}: ", instruction_index)?;
     let instruction = &ir.instructions[instruction_index];
+    write!(output, "i{}: ", instruction_index)?;
+    if let Instruction::Phi(destination, index1, variable1, _, variable2) = *instruction {
+        writeln!(output, "var{} = last_instruction == {} ? var{} : var{};", destination, index1, variable1, variable2)?;
+        writeln!(output, "\tlast_instruction = {};", instruction_index)?;
+    } else {
+        write!(output, "last_instruction = {};\n\t", instruction_index)?;
+    }
+
     match *instruction {
         Instruction::Integer(destination, constant) => writeln!(output, "var{} = {};", destination, constant)?,
         Instruction::Null(destination) => writeln!(output, "var{} = 0;", destination)?,
@@ -198,6 +206,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::Branch(condition_variable, if_index, then_index) => {
             writeln!(output, "if (var{}) goto i{}; else goto i{};", condition_variable, if_index, then_index)?;
         },
+        Instruction::Phi(..) => {}, // special case above
 
         Instruction::Nop => writeln!(output, ";")?,
         Instruction::BreakPlaceholder => panic!("break placeholder left unfilled"),

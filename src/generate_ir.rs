@@ -38,6 +38,7 @@ pub enum Instruction<'source> {
     Return(VariableId),
     Jump(usize),
     Branch(VariableId, usize, usize),
+    Phi(VariableId, usize, VariableId, usize, VariableId),
 
     Nop,
     BreakPlaceholder,
@@ -431,6 +432,35 @@ impl<'source> IrGenerator<'source> {
                                     return self.generate_error()
                                 },
                             }
+                        },
+                        Operator::And | Operator::Or => {
+                            let condition_variable = self.generate_ir_from_expression(left, Some(self.compiler.type_bool()));
+                            let condition_span = self.compiler.expression_span(left);
+                            let condition_variable = self.autocast_variable_to_type(condition_variable, self.compiler.type_bool(), condition_span);
+
+                            let branch = self.instructions.len();
+                            self.instructions.push(Instruction::Nop);
+
+                            let then_branch = self.instructions.len();
+                            let then_variable = self.generate_ir_from_expression(right, Some(self.compiler.type_bool()));
+                            let then_type = self.variables[then_variable].typ;
+                            if !self.compiler.types_match(then_type, self.compiler.type_bool()) {
+                                let span = self.compiler.expression_span(right);
+                                self.compiler.report_error(Error::InvalidOperandType { span, typ: then_type });
+                                return self.generate_error()
+                            }
+
+                            let merge = self.instructions.len();
+                            if operator == Operator::And {
+                                self.instructions[branch] = Instruction::Branch(condition_variable, then_branch, merge);
+                            } else {
+                                self.instructions[branch] = Instruction::Branch(condition_variable, merge, then_branch);
+                            }
+
+                            let output_variable = self.new_variable(Variable { typ: self.compiler.type_bool(), is_temporary: true });
+                            self.instructions.push(Instruction::Phi(output_variable, branch, condition_variable, merge - 1, then_variable));
+
+                            return output_variable
                         },
                         Operator::Not => unreachable!(),
                     };
@@ -830,6 +860,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Return(variable) => write!(f, "return %{}", variable)?,
                 Instruction::Jump(index) => write!(f, "jump @{:<03}", index)?,
                 Instruction::Branch(variable, index1, index2) => write!(f, "branch %{}, @{:<03}, @{:<03}", variable, index1, index2)?,
+                Instruction::Phi(variable, index1, variable1, index2, variable2) => write!(f, "%{} = phi @{:<03} => %{}, @{:<03} => %{}", variable, index1, variable1, index2, variable2)?,
 
                 Instruction::Nop => write!(f, "nop")?,
                 Instruction::BreakPlaceholder => write!(f, "<break placeholder>")?,
