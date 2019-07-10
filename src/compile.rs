@@ -84,6 +84,7 @@ pub enum Error<'source> {
     AmbiguousOverload(&'source str, FunctionIdentifier),
     UnexpectedType { span: &'source str, expected: TypeId, found: TypeId },
     InvalidOperandType { span: &'source str, typ: TypeId },
+    InvalidOperandTypes { span: &'source str, operator: BinaryOperator, left: TypeId, right: TypeId },
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
@@ -576,6 +577,10 @@ impl<'source> Compiler<'source> {
             },
             InvalidOperandType { span, typ } => {
                 eprintln!("invalid operand type: {}", TypePrinter(self, typ));
+                print_span(self.source, span);
+            },
+            InvalidOperandTypes { span, operator, left, right } => {
+                eprintln!("invalid operand types: {} {} {}", TypePrinter(self, left), operator.symbol(), TypePrinter(self, right));
                 print_span(self.source, span);
             },
             FunctionMightNotReturn(span) => {

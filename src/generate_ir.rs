@@ -411,6 +411,25 @@ impl<'source> IrGenerator<'source> {
                     BinaryOperator::GreaterThan => Instruction::GreaterThan,
                     BinaryOperator::LessThanEquals => Instruction::LessThanEquals,
                     BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
+                    BinaryOperator::Is => {
+                        let left_variable = self.generate_ir_from_expression(left, None);
+                        let right_variable = self.generate_ir_from_expression(right, None);
+                        let left_type = self.variables[left_variable].typ;
+                        let right_type = self.variables[right_variable].typ;
+                        let left_type_info = self.compiler.get_type_info(left_type);
+                        let right_type_info = self.compiler.get_type_info(right_type);
+                        match (left_type_info, right_type_info) {
+                            (&Type::Pointer(pointer_type1, type1), &Type::Pointer(pointer_type2, type2)) if pointer_type1 == pointer_type2 && self.compiler.types_match(type1, type2) => {
+                                let variable = self.new_variable(Variable { typ: self.compiler.type_bool(), is_temporary: true });
+                                self.instructions.push(Instruction::Equals(variable, left_variable, right_variable));
+                                return variable
+                            },
+                            _ => {
+                                self.compiler.report_error(Error::InvalidOperandTypes { span: expression_span, operator, left: left_type, right: right_type });
+                                return self.generate_error()
+                            },
+                        }
+                    },
                 };
 
                 let name = Box::new([None, Some(operator.symbol()), None]);

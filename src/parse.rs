@@ -50,6 +50,7 @@ pub enum Token<'source> {
     True,
     Type,
     Record,
+    Is,
     EndOfFile,
 }
 
@@ -112,6 +113,7 @@ impl<'source> fmt::Display for Token<'source> {
             False => "false",
             True => "true",
             Type => "type",
+            Is => "is",
             Record => "record",
             EndOfFile => "<end of file>",
         })?;
@@ -131,6 +133,7 @@ pub enum BinaryOperator {
     GreaterThan,
     LessThanEquals,
     GreaterThanEquals,
+    Is,
 }
 
 impl BinaryOperator {
@@ -146,6 +149,7 @@ impl BinaryOperator {
             Token::GreaterThan => Some(BinaryOperator::GreaterThan),
             Token::LessThanEquals => Some(BinaryOperator::LessThanEquals),
             Token::GreaterThanEquals => Some(BinaryOperator::GreaterThanEquals),
+            Token::Is => Some(BinaryOperator::Is),
             _ => None,
         }
     }
@@ -157,6 +161,7 @@ impl BinaryOperator {
             BinaryOperator::GreaterThan => 20,
             BinaryOperator::LessThanEquals => 20,
             BinaryOperator::GreaterThanEquals => 20,
+            BinaryOperator::Is => 20,
             BinaryOperator::Plus => 30,
             BinaryOperator::Minus => 30,
             BinaryOperator::Times => 31,
@@ -178,6 +183,7 @@ impl BinaryOperator {
             BinaryOperator::GreaterThan => ">",
             BinaryOperator::LessThanEquals => "<=",
             BinaryOperator::GreaterThanEquals => ">=",
+            BinaryOperator::Is => "is",
         }
     }
 }
@@ -562,6 +568,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "true" => Ok(Token::True),
                     "type" => Ok(Token::Type),
                     "record" => Ok(Token::Record),
+                    "is" => Ok(Token::Is),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
