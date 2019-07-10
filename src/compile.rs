@@ -35,6 +35,9 @@ pub enum Type {
     Natural16,
     Natural32,
     Natural64,
+    /// This is an internal type used to resolve integer literal types in function calls.  See
+    /// `Compiler::lookup_function`.
+    GenericInteger,
     Bool,
     Null,
     Pointer(PointerType, TypeId),
@@ -130,6 +133,7 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Natural16 => "nat16",
             Type::Natural32 => "nat32",
             Type::Natural64 => "nat64",
+            Type::GenericInteger => "<integer>",
             Type::Bool => "bool",
             Type::Null => "null",
             Type::Pointer(PointerType::Reference, subtype) => {
@@ -233,6 +237,7 @@ pub enum PrimitiveType {
     Bool,
     Null,
     Error,
+    GenericInteger,
     NumberOfPrimitives,
 }
 
@@ -253,6 +258,7 @@ impl<'source> Compiler<'source> {
                 8 => Type::Bool,
                 9 => Type::Null,
                 10 => Type::Error,
+                11 => Type::GenericInteger,
                 _ => unreachable!(),
             };
             let pointer = type_arena.alloc(type_info);
@@ -412,29 +418,9 @@ impl<'source> Compiler<'source> {
         match (type1, type2) {
             // errors
             (&Type::Error, _)
-            | (_, &Type::Error)
-            // integer upcasts
-            | (&Type::Integer8, &Type::Integer64)
-            | (&Type::Integer16, &Type::Integer64)
-            | (&Type::Integer32, &Type::Integer64)
-            | (&Type::Integer8, &Type::Integer32)
-            | (&Type::Integer16, &Type::Integer32)
-            | (&Type::Integer8, &Type::Integer16)
-            // natural upcasts
-            | (&Type::Natural8, &Type::Natural64)
-            | (&Type::Natural16, &Type::Natural64)
-            | (&Type::Natural32, &Type::Natural64)
-            | (&Type::Natural8, &Type::Natural32)
-            | (&Type::Natural16, &Type::Natural32)
-            | (&Type::Natural8, &Type::Natural16)
-            // natural -> integer upcasts
-            | (&Type::Natural8, &Type::Integer64)
-            | (&Type::Natural16, &Type::Integer64)
-            | (&Type::Natural32, &Type::Integer64)
-            | (&Type::Natural8, &Type::Integer32)
-            | (&Type::Natural16, &Type::Integer32)
-            | (&Type::Natural8, &Type::Integer16)
-              => true,
+            | (_, &Type::Error) => true,
+            // Used for function overload resolution
+            (&Type::GenericInteger, _) if type2.is_integral() => true,
             // mut -> ref, muts -> refs
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
                 if self.can_autocast_pointer_type(pointer_type1, pointer_type2) && self.types_match(typ1, typ2)
@@ -479,6 +465,7 @@ impl<'source> Compiler<'source> {
             (&Type::Natural16, &Type::Natural16) => true,
             (&Type::Natural32, &Type::Natural32) => true,
             (&Type::Natural64, &Type::Natural64) => true,
+            (&Type::GenericInteger, &Type::GenericInteger) => true,
             (&Type::Bool, &Type::Bool) => true,
             (&Type::Null, &Type::Null) => true,
             (&Type::Pointer(type1, subtype1), &Type::Pointer(type2, subtype2)) => type1 == type2 && self.types_match(subtype1, subtype2),
@@ -501,6 +488,26 @@ impl<'source> Compiler<'source> {
             },
             (&Type::Error, &Type::Error) => true,
             _ => false,
+        }
+    }
+
+    fn types_match_allow_generic_integer(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
+        let type1 = self.get_type_info(type_id1);
+        let type2 = self.get_type_info(type_id2);
+        match (type1, type2) {
+            (&Type::GenericInteger, typ)
+            | (typ, &Type::GenericInteger) if typ.is_integral() => true,
+            _ => self.types_match(type_id1, type_id2),
+        }
+    }
+
+    fn types_match_default_generic_integer(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
+        let type1 = self.get_type_info(type_id1);
+        let type2 = self.get_type_info(type_id2);
+        match (type1, type2) {
+            (&Type::GenericInteger, &Type::Integer32)
+            | (&Type::Integer32, &Type::GenericInteger) => true,
+            _ => self.types_match(type_id1, type_id2),
         }
     }
 
@@ -752,22 +759,29 @@ impl<'source> Compiler<'source> {
                 vec![true; argument_types.len()],
                 |mut x, candidate| {
                     for i in 0..x.len() {
-                        x[i] &= self.types_match(candidate.arguments[i], candidate1.arguments[i]);
+                        x[i] &= self.types_match_allow_generic_integer(candidate.arguments[i], candidate1.arguments[i]);
                     }
                     x
                 }
             );
 
-            for function in candidates.iter() {
-                if function.arguments.iter()
-                    .zip(argument_types.iter())
-                    .enumerate()
-                    .filter(|&(i, _)| !ignorable[i])
-                    .all(|(_, (&x, &y))| self.types_match(x, y))
-                {
-                    // We have a match!
-                    return Some(function)
-                }
+            // We need to be careful here, as if one of our argument types is a GenericInteger,
+            // there may be more than one match (as GenericInteger
+            // `types_match_allow_generic_integer`s with every integer type).  If possible, we want
+            // to select the match where the non-ignorable GenericInteger arguments are all
+            // Integer32; otherwise, we reject the call as ambiguous.
+            //
+            // That's what `types_match_default_generic_integer` is for: it treats `GenericInteger`
+            // as matching *only* `Integer32` (instead of any integer type).
+            for function in candidates.iter()
+                .filter(|function| function.arguments.iter()
+                        .zip(argument_types.iter())
+                        .enumerate()
+                        .filter(|&(i, _)| !ignorable[i])
+                        .all(|(_, (&x, &y))| self.types_match_default_generic_integer(x, y)))
+            {
+                // We have a match!
+                return Some(function)
             }
 
             self.report_error(Error::AmbiguousOverload(span, function_identifier));

@@ -106,6 +106,7 @@ fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeI
         Type::Natural16 => write!(output, "uint16_t"),
         Type::Natural32 => write!(output, "uint32_t"),
         Type::Natural64 => write!(output, "uint64_t"),
+        Type::GenericInteger => unreachable!(),
         Type::Null => write!(output, "_opust_null"),
         Type::Bool => write!(output, "_opust_bool"),
         Type::Pointer(PointerType::Reference, subtype) | Type::Pointer(PointerType::Array, subtype) => {
@@ -267,6 +268,7 @@ fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) 
         Type::Natural16 => write!(output, "nat16"),
         Type::Natural32 => write!(output, "nat32"),
         Type::Natural64 => write!(output, "nat64"),
+        Type::GenericInteger => unreachable!(),
         Type::Null => write!(output, "null"),
         Type::Bool => write!(output, "bool"),
         Type::Pointer(pointer_type, subtype) => {

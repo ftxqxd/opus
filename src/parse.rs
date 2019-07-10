@@ -27,7 +27,7 @@ pub enum Token<'source> {
     At,
     Tilde,
     Dot,
-    Integer(u64, bool, u8),
+    Integer(u64, Option<(bool, u8)>),
     String(Box<[u8]>),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
@@ -80,7 +80,11 @@ impl<'source> fmt::Display for Token<'source> {
             At => "@",
             Tilde => "¯",
             Dot => ".",
-            Integer(value, is_signed, size) => {
+            Integer(value, None) => {
+                buffer = format!("{}", value);
+                &buffer
+            },
+            Integer(value, Some((is_signed, size))) => {
                 buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
                 &buffer
             },
@@ -180,7 +184,7 @@ impl BinaryOperator {
 
 #[derive(Debug, PartialEq)]
 pub enum Expression<'source> {
-    Integer(u64, bool, u8),
+    Integer(u64, Option<(bool, u8)>),
     Null,
     Bool(bool),
     String(Box<[u8]>),
@@ -485,7 +489,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
                         self.advance();
                         let old_position = self.real_position;
-                        match (self.advance(), self.peek()) {
+                        Some(match (self.advance(), self.peek()) {
                             (Some('8'), _) => 8,
                             (Some('1'), Some('6')) => {
                                 self.advance();
@@ -511,11 +515,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                                 return Err(Error::InvalidNumericSize(span, size))
                             },
                             _ => { self.real_position = old_position; self.position = old_position; 32 },
-                        }
+                        })
                     },
-                    _ => 32,
+                    _ => None,
                 };
-                Ok(Token::Integer(i, signed, size))
+                Ok(Token::Integer(i, size.map(|size| (signed, size))))
             },
             Some(c @ 'A'..= 'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
@@ -714,8 +718,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let low = self.token_low;
 
         let expression = match token {
-            Token::Integer(i, signed, size) => {
-                Expression::Integer(i, signed, size)
+            Token::Integer(i, meta) => {
+                Expression::Integer(i, meta)
             },
             Token::String(bytes) => {
                 Expression::String(bytes)

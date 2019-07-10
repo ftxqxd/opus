@@ -6,7 +6,7 @@ use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, 
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
-    Integer(VariableId, u64),
+    Integer(VariableId, i64),
     Null(VariableId),
     Bool(VariableId, bool),
     String(VariableId, Box<[u8]>),
@@ -166,10 +166,17 @@ impl<'source> IrGenerator<'source> {
             // don't need to do anything
             variable
         } else if self.compiler.can_autocast(found_type, expected_type) {
-            // do an autocast
-            let return_variable = self.new_variable(Variable { typ: expected_type, is_temporary: true });
-            self.instructions.push(Instruction::Cast(return_variable, variable));
-            return_variable
+            if let Type::GenericInteger = *self.compiler.get_type_info(found_type) {
+                // This GenericInteger variable must be the argument of a function call, so we can
+                // just change its type directly, as it's a temporary so isn't used anywhere else.
+                self.variables[variable].typ = expected_type;
+                variable
+            } else {
+                // do an autocast
+                let return_variable = self.new_variable(Variable { typ: expected_type, is_temporary: true });
+                self.instructions.push(Instruction::Cast(return_variable, variable));
+                return_variable
+            }
         } else {
             // generate an error
             self.compiler.report_error(Error::UnexpectedType { span, expected: expected_type, found: found_type });
@@ -194,11 +201,11 @@ impl<'source> IrGenerator<'source> {
     fn generate_ir_from_statement(&mut self, statement: &'source Statement<'source>) -> bool {
         match *statement {
             Statement::Expression(ref expression) => {
-                self.generate_ir_from_expression(expression);
+                self.generate_ir_from_expression(expression, None);
             },
             Statement::VariableDefinition(name, ref value) => {
-                let variable_id = self.generate_ir_from_expression(value);
-                let typ = self.variables[variable_id].typ.clone();
+                let variable_id = self.generate_ir_from_expression(value, None);
+                let typ = self.variables[variable_id].typ;
                 if self.locals_stack.contains(&name) {
                     self.compiler.report_error(Error::ShadowedName(name));
                 } else {
@@ -211,16 +218,16 @@ impl<'source> IrGenerator<'source> {
             },
             Statement::Assignment(ref left, ref right) => {
                 let left_variable_id = self.generate_pointer_from_expression(left, PointerType::Mutable);
-
-                let right_variable_id = self.generate_ir_from_expression(right);
-                let span = self.compiler.expression_span(right);
                 let left_variable_type = self.get_lvalue_type(left_variable_id);
+
+                let right_variable_id = self.generate_ir_from_expression(right, Some(left_variable_type));
+                let span = self.compiler.expression_span(right);
                 let final_variable_id = self.autocast_variable_to_type(right_variable_id, left_variable_type, span);
 
                 self.instructions.push(Instruction::Store(left_variable_id, final_variable_id));
             },
             Statement::Return(ref expression) => {
-                let return_variable = self.generate_ir_from_expression(expression);
+                let return_variable = self.generate_ir_from_expression(expression, Some(self.function.return_type));
 
                 let expected_type = self.function.return_type;
                 let span = self.compiler.expression_span(expression);
@@ -229,7 +236,7 @@ impl<'source> IrGenerator<'source> {
                 return true
             },
             Statement::If(ref condition, ref then_block, ref else_block) => {
-                let condition_variable = self.generate_ir_from_expression(condition);
+                let condition_variable = self.generate_ir_from_expression(condition, Some(self.compiler.type_bool()));
                 let condition_span = self.compiler.expression_span(condition);
                 let condition_variable = self.autocast_variable_to_type(condition_variable, self.compiler.type_bool(), condition_span);
 
@@ -260,7 +267,7 @@ impl<'source> IrGenerator<'source> {
 
                 let is_infinite = if let Expression::Bool(true) = **condition { true } else { false };
 
-                let condition_variable = self.generate_ir_from_expression(condition);
+                let condition_variable = self.generate_ir_from_expression(condition, Some(self.compiler.type_bool()));
                 let condition_span = self.compiler.expression_span(condition);
                 let condition_variable = self.autocast_variable_to_type(condition_variable, self.compiler.type_bool(), condition_span);
 
@@ -313,24 +320,45 @@ impl<'source> IrGenerator<'source> {
         false
     }
 
-    fn generate_ir_from_expression(&mut self, expression: &'source Expression<'source>) -> VariableId {
+    /// Generate IR for the given expression and return the index of the variable representing the
+    /// result.
+    ///
+    /// The parameter `expected_type` isn't used for type checking; it is used to infer the type of
+    /// integer literals.
+    fn generate_ir_from_expression(&mut self, expression: &'source Expression<'source>, expected_type: Option<TypeId>) -> VariableId {
         let expression_span = self.compiler.expression_span(expression);
 
         match *expression {
-            Expression::Integer(i, signed, size) => {
-                let typ = self.compiler.type_primitive(match (signed, size) {
-                    (false, 8) => PrimitiveType::Natural8,
-                    (false, 16) => PrimitiveType::Natural16,
-                    (false, 32) => PrimitiveType::Natural32,
-                    (false, 64) => PrimitiveType::Natural64,
-                    (true, 8) => PrimitiveType::Integer8,
-                    (true, 16) => PrimitiveType::Integer16,
-                    (true, 32) => PrimitiveType::Integer32,
-                    (true, 64) => PrimitiveType::Integer64,
-                    _ => unreachable!(),
-                });
+            Expression::Integer(i, meta) => {
+                let typ = match meta {
+                    Some(x) => self.compiler.type_primitive(match x {
+                        (false, 8) => PrimitiveType::Natural8,
+                        (false, 16) => PrimitiveType::Natural16,
+                        (false, 32) => PrimitiveType::Natural32,
+                        (false, 64) => PrimitiveType::Natural64,
+                        (true, 8) => PrimitiveType::Integer8,
+                        (true, 16) => PrimitiveType::Integer16,
+                        (true, 32) => PrimitiveType::Integer32,
+                        (true, 64) => PrimitiveType::Integer64,
+                        _ => unreachable!(),
+                    }),
+                    None => match expected_type.map(|x| self.compiler.get_type_info(x)) {
+                          Some(&Type::Integer8)
+                        | Some(&Type::Integer16)
+                        | Some(&Type::Integer32)
+                        | Some(&Type::Integer64)
+                        | Some(&Type::Natural8)
+                        | Some(&Type::Natural16)
+                        | Some(&Type::Natural32)
+                        | Some(&Type::Natural64)
+                        | Some(&Type::GenericInteger) => {
+                            expected_type.unwrap()
+                        },
+                        _ => self.compiler.type_primitive(PrimitiveType::Integer32),
+                    },
+                };
                 let variable = self.new_variable(Variable { typ, is_temporary: true });
-                self.instructions.push(Instruction::Integer(variable, i));
+                self.instructions.push(Instruction::Integer(variable, i as i64));
                 variable
             },
             Expression::Null => {
@@ -361,7 +389,7 @@ impl<'source> IrGenerator<'source> {
                 new_variable_id
             },
             Expression::Call(ref name, ref arguments) => {
-                let mut argument_variables = arguments.iter().map(|x| self.generate_ir_from_expression(x)).collect();
+                let mut argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, Some(self.compiler.type_primitive(PrimitiveType::GenericInteger)))).collect();
                 let argument_spans = arguments.iter().map(|x| self.compiler.expression_span(x)).collect();
                 if let Some(function) = self.autocast_call_arguments(expression_span, name, &mut argument_variables, argument_spans) {
                     let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
@@ -387,8 +415,9 @@ impl<'source> IrGenerator<'source> {
 
                 let name = Box::new([None, Some(operator.symbol()), None]);
 
-                let left_variable = self.generate_ir_from_expression(left);
-                let right_variable = self.generate_ir_from_expression(right);
+                let generic_integer = Some(self.compiler.type_primitive(PrimitiveType::GenericInteger));
+                let left_variable = self.generate_ir_from_expression(left, generic_integer);
+                let right_variable = self.generate_ir_from_expression(right, generic_integer);
                 let left_span = self.compiler.expression_span(left);
                 let right_span = self.compiler.expression_span(right);
 
@@ -410,7 +439,7 @@ impl<'source> IrGenerator<'source> {
                 }
             },
             Expression::Cast(ref subexpression, ref type_expression) => {
-                let variable_id = self.generate_ir_from_expression(subexpression);
+                let variable_id = self.generate_ir_from_expression(subexpression, None);
                 let old_type = self.variables[variable_id].typ;
                 let typ = self.compiler.resolve_type(type_expression);
                 if self.compiler.can_cast(old_type, typ) {
@@ -439,7 +468,7 @@ impl<'source> IrGenerator<'source> {
                 variable_id
             },
             Expression::Negate(ref subexpression) => {
-                let sub_index = self.generate_ir_from_expression(subexpression);
+                let sub_index = self.generate_ir_from_expression(subexpression, Some(self.compiler.type_primitive(PrimitiveType::GenericInteger)));
                 let sub_variable = &self.variables[sub_index];
 
                 let subtype = sub_variable.typ;
@@ -454,6 +483,21 @@ impl<'source> IrGenerator<'source> {
                         self.instructions.push(Instruction::Negate(output_index, sub_index));
                         output_index
                     },
+                    Type::GenericInteger => {
+                        // Since our variable has type GenericInteger, it must have been generated
+                        // from an integer literal expression.  Hence the last instruction
+                        // generated must be an Instruction::Integer, and we can just negate its
+                        // value.
+                        //
+                        // This allows us to infer integer types even after we have applied a unary
+                        // minus operation to them.
+                        if let Some(&Instruction::Integer(variable, value)) = self.instructions.last() {
+                            *self.instructions.last_mut().unwrap() = Instruction::Integer(variable, -value);
+                            variable
+                        } else {
+                            unreachable!()
+                        }
+                    },
                     Type::Error => {
                         self.generate_error()
                     },
@@ -464,7 +508,7 @@ impl<'source> IrGenerator<'source> {
                 }
             },
             Expression::Parentheses(ref subexpression) => {
-                self.generate_ir_from_expression(subexpression)
+                self.generate_ir_from_expression(subexpression, expected_type)
             },
         }
     }
@@ -545,7 +589,7 @@ impl<'source> IrGenerator<'source> {
                 }
             },
             Expression::Dereference(ref subexpression) => {
-                let variable_id = self.generate_ir_from_expression(subexpression);
+                let variable_id = self.generate_ir_from_expression(subexpression, None);
                 let subspan = self.compiler.expression_span(subexpression);
                 self.try_cast_pointer(variable_id, pointer_type, subspan)
             },
@@ -554,8 +598,8 @@ impl<'source> IrGenerator<'source> {
                 self.generate_ir_for_field_access(record_variable, field_name, pointer_type, span)
             },
             Expression::Index(ref array_expression, ref index_expression) => {
-                let array_variable = self.generate_ir_from_expression(array_expression);
-                let index_variable = self.generate_ir_from_expression(index_expression);
+                let array_variable = self.generate_ir_from_expression(array_expression, None);
+                let index_variable = self.generate_ir_from_expression(index_expression, Some(self.compiler.type_primitive(PrimitiveType::Natural64)));
 
                 let index_span = self.compiler.expression_span(index_expression);
                 // FIXME: should be a type like natsize instead of nat64
@@ -591,7 +635,8 @@ impl<'source> IrGenerator<'source> {
                 self.instructions.push(Instruction::Allocate(output_variable));
 
                 for &(name, ref value) in fields.iter() {
-                    let value_variable = self.generate_ir_from_expression(value);
+                    let field_type_option = self.get_field_type(output_variable, name);
+                    let value_variable = self.generate_ir_from_expression(value, field_type_option);
                     let span = self.compiler.expression_span(value);
                     let field_variable = self.generate_ir_for_field_access(output_variable, name, PointerType::Mutable, span);
                     self.instructions.push(Instruction::Store(field_variable, value_variable));
@@ -606,6 +651,19 @@ impl<'source> IrGenerator<'source> {
                 self.compiler.report_error(Error::InvalidLvalue(span));
                 self.generate_error()
             },
+        }
+    }
+
+    fn get_field_type(&mut self, record_variable: VariableId, field_name: &'source str) -> Option<TypeId> {
+        let typ = self.get_lvalue_type(record_variable);
+        let type_info = self.compiler.get_type_info(typ);
+        match *type_info {
+            Type::Record { ref fields, .. } => {
+                fields.iter().find(|&&(ref field_name2, _)| {
+                    **field_name2 == *field_name
+                }).map(|&(_, field_type)| field_type)
+            },
+            _ => None,
         }
     }
 
@@ -642,7 +700,7 @@ impl<'source> IrGenerator<'source> {
         }
     }
 
-    fn autocast_call_arguments(&mut self, span: &'source str, name: &FunctionName<'source>, argument_variables: &mut Vec<VariableId>, argument_spans: Vec<&'source str>) -> Option<&'source Function> {
+    fn autocast_call_arguments(&mut self, span: &'source str, name: &FunctionName<'source>, argument_variables: &mut [VariableId], argument_spans: Vec<&'source str>) -> Option<&'source Function> {
         let argument_types: Box<[_]> = argument_variables.iter().map(|&x| self.variables[x].typ).collect();
 
         if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
