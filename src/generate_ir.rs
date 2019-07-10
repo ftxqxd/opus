@@ -1,7 +1,7 @@
 use std::mem;
 use std::fmt;
 use std::collections::HashMap;
-use crate::parse::{Expression, Statement, FunctionSignature, Block, BinaryOperator, FunctionName};
+use crate::parse::{Expression, Statement, FunctionSignature, Block, Operator, FunctionName};
 use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, TypePrinter, FunctionPrinter};
 
 #[derive(Debug)]
@@ -30,6 +30,7 @@ pub enum Instruction<'source> {
     LessThanEquals(VariableId, VariableId, VariableId),
     GreaterThanEquals(VariableId, VariableId, VariableId),
 
+    Not(VariableId, VariableId),
     Negate(VariableId, VariableId),
 
     Cast(VariableId, VariableId),
@@ -399,62 +400,92 @@ impl<'source> IrGenerator<'source> {
                     self.generate_error()
                 }
             },
-            Expression::BinaryOperator(operator, ref left, ref right) => {
-                let instruction = match operator {
-                    BinaryOperator::Plus => Instruction::Add,
-                    BinaryOperator::Minus => Instruction::Subtract,
-                    BinaryOperator::Times => Instruction::Multiply,
-                    BinaryOperator::Divide => Instruction::Divide,
-                    BinaryOperator::Modulo => Instruction::Modulo,
-                    BinaryOperator::Equals => Instruction::Equals,
-                    BinaryOperator::LessThan => Instruction::LessThan,
-                    BinaryOperator::GreaterThan => Instruction::GreaterThan,
-                    BinaryOperator::LessThanEquals => Instruction::LessThanEquals,
-                    BinaryOperator::GreaterThanEquals => Instruction::GreaterThanEquals,
-                    BinaryOperator::Is => {
-                        let left_variable = self.generate_ir_from_expression(left, None);
-                        let right_variable = self.generate_ir_from_expression(right, None);
-                        let left_type = self.variables[left_variable].typ;
-                        let right_type = self.variables[right_variable].typ;
-                        let left_type_info = self.compiler.get_type_info(left_type);
-                        let right_type_info = self.compiler.get_type_info(right_type);
-                        match (left_type_info, right_type_info) {
-                            (&Type::Pointer(pointer_type1, type1), &Type::Pointer(pointer_type2, type2)) if pointer_type1 == pointer_type2 && self.compiler.types_match(type1, type2) => {
-                                let variable = self.new_variable(Variable { typ: self.compiler.type_bool(), is_temporary: true });
-                                self.instructions.push(Instruction::Equals(variable, left_variable, right_variable));
-                                return variable
-                            },
-                            _ => {
-                                self.compiler.report_error(Error::InvalidOperandTypes { span: expression_span, operator, left: left_type, right: right_type });
-                                return self.generate_error()
-                            },
+            Expression::Operator(operator, ref left, ref right) => {
+                if operator.is_binary() {
+                    let instruction = match operator {
+                        Operator::Plus => Instruction::Add,
+                        Operator::Minus => Instruction::Subtract,
+                        Operator::Times => Instruction::Multiply,
+                        Operator::Divide => Instruction::Divide,
+                        Operator::Modulo => Instruction::Modulo,
+                        Operator::Equals => Instruction::Equals,
+                        Operator::LessThan => Instruction::LessThan,
+                        Operator::GreaterThan => Instruction::GreaterThan,
+                        Operator::LessThanEquals => Instruction::LessThanEquals,
+                        Operator::GreaterThanEquals => Instruction::GreaterThanEquals,
+                        Operator::Is => {
+                            let left_variable = self.generate_ir_from_expression(left, None);
+                            let right_variable = self.generate_ir_from_expression(right, None);
+                            let left_type = self.variables[left_variable].typ;
+                            let right_type = self.variables[right_variable].typ;
+                            let left_type_info = self.compiler.get_type_info(left_type);
+                            let right_type_info = self.compiler.get_type_info(right_type);
+                            match (left_type_info, right_type_info) {
+                                (&Type::Pointer(pointer_type1, type1), &Type::Pointer(pointer_type2, type2)) if pointer_type1 == pointer_type2 && self.compiler.types_match(type1, type2) => {
+                                    let variable = self.new_variable(Variable { typ: self.compiler.type_bool(), is_temporary: true });
+                                    self.instructions.push(Instruction::Equals(variable, left_variable, right_variable));
+                                    return variable
+                                },
+                                _ => {
+                                    self.compiler.report_error(Error::InvalidOperandTypes { span: expression_span, operator, left: left_type, right: right_type });
+                                    return self.generate_error()
+                                },
+                            }
+                        },
+                        Operator::Not => unreachable!(),
+                    };
+
+                    let name = Box::new([None, Some(operator.symbol()), None]);
+
+                    let generic_integer = Some(self.compiler.type_primitive(PrimitiveType::GenericInteger));
+                    let left_variable = self.generate_ir_from_expression(left, generic_integer);
+                    let right_variable = self.generate_ir_from_expression(right, generic_integer);
+                    let left_span = self.compiler.expression_span(left);
+                    let right_span = self.compiler.expression_span(right);
+
+                    let mut argument_variables = vec![left_variable, right_variable];
+                    let argument_spans = vec![left_span, right_span];
+
+                    if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
+                        if function.is_builtin {
+                            let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
+                            self.instructions.push(instruction(variable, argument_variables[0], argument_variables[1]));
+                            variable
+                        } else {
+                            let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
+                            self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
+                            variable
                         }
-                    },
-                };
-
-                let name = Box::new([None, Some(operator.symbol()), None]);
-
-                let generic_integer = Some(self.compiler.type_primitive(PrimitiveType::GenericInteger));
-                let left_variable = self.generate_ir_from_expression(left, generic_integer);
-                let right_variable = self.generate_ir_from_expression(right, generic_integer);
-                let left_span = self.compiler.expression_span(left);
-                let right_span = self.compiler.expression_span(right);
-
-                let mut argument_variables = vec![left_variable, right_variable];
-                let argument_spans = vec![left_span, right_span];
-
-                if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
-                    if function.is_builtin {
-                        let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
-                        self.instructions.push(instruction(variable, argument_variables[0], argument_variables[1]));
-                        variable
                     } else {
-                        let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
-                        self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
-                        variable
+                        self.generate_error()
                     }
                 } else {
-                    self.generate_error()
+                    let instruction = match operator {
+                        Operator::Not => Instruction::Not,
+                        _ => unreachable!(),
+                    };
+                    let name = Box::new([Some(operator.symbol()), None]);
+
+                    let generic_integer = Some(self.compiler.type_primitive(PrimitiveType::GenericInteger));
+                    let right_variable = self.generate_ir_from_expression(right, generic_integer);
+                    let right_span = self.compiler.expression_span(right);
+
+                    let mut argument_variables = vec![right_variable];
+                    let argument_spans = vec![right_span];
+
+                    if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
+                        if function.is_builtin {
+                            let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
+                            self.instructions.push(instruction(variable, argument_variables[0]));
+                            variable
+                        } else {
+                            let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
+                            self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
+                            variable
+                        }
+                    } else {
+                        self.generate_error()
+                    }
                 }
             },
             Expression::Cast(ref subexpression, ref type_expression) => {
@@ -787,6 +818,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::LessThanEquals(variable1, variable2, variable3) => write!(f, "%{} = lessthanequals %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::GreaterThanEquals(variable1, variable2, variable3) => write!(f, "%{} = greaterthanequals %{}, %{}", variable1, variable2, variable3)?,
 
+                Instruction::Not(variable1, variable2) => write!(f, "%{} = not %{}", variable1, variable2)?,
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,
 
                 Instruction::Cast(variable1, variable2) => {

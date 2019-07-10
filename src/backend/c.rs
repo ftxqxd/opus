@@ -181,6 +181,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::LessThanEquals(destination, left, right) => writeln!(output, "var{} = var{} <= var{};", destination, left, right)?,
         Instruction::GreaterThanEquals(destination, left, right) => writeln!(output, "var{} = var{} >= var{};", destination, left, right)?,
 
+        Instruction::Not(destination, value) => writeln!(output, "var{} = !var{};", destination, value)?,
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
 
         Instruction::Cast(destination, source) => {

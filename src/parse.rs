@@ -51,6 +51,7 @@ pub enum Token<'source> {
     Type,
     Record,
     Is,
+    Not,
     EndOfFile,
 }
 
@@ -114,6 +115,7 @@ impl<'source> fmt::Display for Token<'source> {
             True => "true",
             Type => "type",
             Is => "is",
+            Not => "not",
             Record => "record",
             EndOfFile => "<end of file>",
         })?;
@@ -122,7 +124,7 @@ impl<'source> fmt::Display for Token<'source> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum BinaryOperator {
+pub enum Operator {
     Plus,
     Minus,
     Times,
@@ -134,56 +136,74 @@ pub enum BinaryOperator {
     LessThanEquals,
     GreaterThanEquals,
     Is,
+    Not,
 }
 
-impl BinaryOperator {
-    fn from_token<'source>(token: &Token<'source>) -> Option<BinaryOperator> {
+impl Operator {
+    fn binary_from_token<'source>(token: &Token<'source>) -> Option<Operator> {
         match *token {
-            Token::Plus => Some(BinaryOperator::Plus),
-            Token::Minus => Some(BinaryOperator::Minus),
-            Token::Asterisk => Some(BinaryOperator::Times),
-            Token::Slash => Some(BinaryOperator::Divide),
-            Token::Percent => Some(BinaryOperator::Modulo),
-            Token::Equals => Some(BinaryOperator::Equals),
-            Token::LessThan => Some(BinaryOperator::LessThan),
-            Token::GreaterThan => Some(BinaryOperator::GreaterThan),
-            Token::LessThanEquals => Some(BinaryOperator::LessThanEquals),
-            Token::GreaterThanEquals => Some(BinaryOperator::GreaterThanEquals),
-            Token::Is => Some(BinaryOperator::Is),
+            Token::Plus => Some(Operator::Plus),
+            Token::Minus => Some(Operator::Minus),
+            Token::Asterisk => Some(Operator::Times),
+            Token::Slash => Some(Operator::Divide),
+            Token::Percent => Some(Operator::Modulo),
+            Token::Equals => Some(Operator::Equals),
+            Token::LessThan => Some(Operator::LessThan),
+            Token::GreaterThan => Some(Operator::GreaterThan),
+            Token::LessThanEquals => Some(Operator::LessThanEquals),
+            Token::GreaterThanEquals => Some(Operator::GreaterThanEquals),
+            Token::Is => Some(Operator::Is),
+            _ => None,
+        }
+    }
+
+    fn unary_from_token<'source>(token: &Token<'source>) -> Option<Operator> {
+        match *token {
+            Token::Not => Some(Operator::Not),
             _ => None,
         }
     }
 
     fn precedence(&self) -> Precedence {
         match *self {
-            BinaryOperator::Equals => 20,
-            BinaryOperator::LessThan => 20,
-            BinaryOperator::GreaterThan => 20,
-            BinaryOperator::LessThanEquals => 20,
-            BinaryOperator::GreaterThanEquals => 20,
-            BinaryOperator::Is => 20,
-            BinaryOperator::Plus => 30,
-            BinaryOperator::Minus => 30,
-            BinaryOperator::Times => 31,
-            BinaryOperator::Divide => 31,
-            BinaryOperator::Modulo => 31,
+            Operator::Equals => 20,
+            Operator::LessThan => 20,
+            Operator::GreaterThan => 20,
+            Operator::LessThanEquals => 20,
+            Operator::GreaterThanEquals => 20,
+            Operator::Is => 20,
+            Operator::Plus => 30,
+            Operator::Minus => 30,
+            Operator::Times => 31,
+            Operator::Divide => 31,
+            Operator::Modulo => 31,
+            Operator::Not => 2,
         }
     }
 
     pub fn symbol(&self) -> &'static str {
         match *self {
-            BinaryOperator::Plus => "+",
-            BinaryOperator::Minus => "-",
-            BinaryOperator::Times => "*",
-            BinaryOperator::Divide => "/",
-            BinaryOperator::Modulo => "%",
+            Operator::Plus => "+",
+            Operator::Minus => "-",
+            Operator::Times => "*",
+            Operator::Divide => "/",
+            Operator::Modulo => "%",
 
-            BinaryOperator::Equals => "=",
-            BinaryOperator::LessThan => "<",
-            BinaryOperator::GreaterThan => ">",
-            BinaryOperator::LessThanEquals => "<=",
-            BinaryOperator::GreaterThanEquals => ">=",
-            BinaryOperator::Is => "is",
+            Operator::Equals => "=",
+            Operator::LessThan => "<",
+            Operator::GreaterThan => ">",
+            Operator::LessThanEquals => "<=",
+            Operator::GreaterThanEquals => ">=",
+            Operator::Is => "is",
+
+            Operator::Not => "not",
+        }
+    }
+
+    pub fn is_binary(&self) -> bool {
+        match *self {
+            Operator::Not => false,
+            _ => true,
         }
     }
 }
@@ -198,7 +218,7 @@ pub enum Expression<'source> {
     VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Record(Box<Expression<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
-    BinaryOperator(BinaryOperator, Box<Expression<'source>>, Box<Expression<'source>>),
+    Operator(Operator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
     MutableReference(Box<Expression<'source>>),
     ArrayReference(Box<Expression<'source>>),
@@ -569,6 +589,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "type" => Ok(Token::Type),
                     "record" => Ok(Token::Record),
                     "is" => Ok(Token::Is),
+                    "not" => Ok(Token::Not),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -671,11 +692,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let low = self.string_low(left_span);
 
         let operator_token = self.peek_token()?;
-        if let Some(operator) = BinaryOperator::from_token(&operator_token) {
+        if let Some(operator) = Operator::binary_from_token(&operator_token) {
             let _ = self.parse_token()?;
             let right = self.parse_expression()?;
 
-            let mut boxed_expression = Box::new(Expression::BinaryOperator(operator, left, right));
+            let mut boxed_expression = Box::new(Expression::Operator(operator, left, right));
             self.correct_precedence(&mut *boxed_expression);
 
             self.compiler.expression_spans.insert(&*boxed_expression, &self.source[low..self.position]);
@@ -687,8 +708,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     }
 
     fn correct_precedence(&mut self, expression: &mut Expression<'source>) {
-        if let Expression::BinaryOperator(ref mut operator, ref mut left, ref mut right) = *expression {
-            if let Expression::BinaryOperator(ref mut operator2, ref mut right_left, ref mut right_right) = **right {
+        if let Expression::Operator(ref mut operator, ref mut left, ref mut right) = *expression {
+            if let Expression::Operator(ref mut operator2, ref mut right_left, ref mut right_right) = **right {
                 if operator.precedence() >= operator2.precedence() {
                     // These operators are out of order; swap them around!
                     //
@@ -783,7 +804,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Var => {
                 let variable_name = self.parse_lowercase_identifier()?;
                 self.expect(&Token::Colon)?;
-                let type_expression = self.parse_expression()?;
+                let type_expression = self.parse_atom()?;
                 Expression::VariableDefinition(variable_name, type_expression)
             },
             Token::Null => {
@@ -794,6 +815,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::True => {
                 Expression::Bool(true)
+            },
+            Token::Not => {
+                // We treat unary operators as binary operators which ignore their first argument
+                let subexpression = self.parse_expression()?;
+                let mut expression_box = Box::new(Expression::Operator(Operator::Not, Box::new(Expression::Null), subexpression));
+                self.correct_precedence(&mut *expression_box);
+                self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
+                return Ok(expression_box)
             },
             t => {
                 let span = &self.source[low..self.position];
@@ -1045,8 +1074,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Token::UppercaseIdentifier(part) => {
                     name.push(Some(part));
                 },
-                ref t if BinaryOperator::from_token(t).is_some() => {
-                    let operator = BinaryOperator::from_token(t).unwrap();
+                ref t if Operator::binary_from_token(t).is_some() => {
+                    let operator = Operator::binary_from_token(t).unwrap();
+                    name.push(Some(operator.symbol()));
+                },
+                ref t if Operator::unary_from_token(t).is_some() => {
+                    let operator = Operator::unary_from_token(t).unwrap();
                     name.push(Some(operator.symbol()));
                 },
                 Token::LowercaseIdentifier(identifier) => {

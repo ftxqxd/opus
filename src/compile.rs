@@ -2,7 +2,7 @@ use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
 use typed_arena::Arena;
-use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, BinaryOperator};
+use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, Operator};
 use crate::frontend::Options;
 
 pub struct Compiler<'source> {
@@ -84,7 +84,7 @@ pub enum Error<'source> {
     AmbiguousOverload(&'source str, FunctionIdentifier),
     UnexpectedType { span: &'source str, expected: TypeId, found: TypeId },
     InvalidOperandType { span: &'source str, typ: TypeId },
-    InvalidOperandTypes { span: &'source str, operator: BinaryOperator, left: TypeId, right: TypeId },
+    InvalidOperandTypes { span: &'source str, operator: Operator, left: TypeId, right: TypeId },
     FunctionMightNotReturn(&'source str),
     BreakOutsideLoop(&'source str),
     ContinueOutsideLoop(&'source str),
@@ -282,11 +282,11 @@ impl<'source> Compiler<'source> {
         };
 
         for &operator in &[
-            BinaryOperator::Plus,
-            BinaryOperator::Minus,
-            BinaryOperator::Times,
-            BinaryOperator::Divide,
-            BinaryOperator::Modulo,
+            Operator::Plus,
+            Operator::Minus,
+            Operator::Times,
+            Operator::Divide,
+            Operator::Modulo,
         ] {
             let mut overloads = Vec::with_capacity(8);
             let operator_name = operator.symbol();
@@ -316,11 +316,11 @@ impl<'source> Compiler<'source> {
         }
 
         for &operator in &[
-            BinaryOperator::Equals,
-            BinaryOperator::LessThan,
-            BinaryOperator::GreaterThan,
-            BinaryOperator::LessThanEquals,
-            BinaryOperator::GreaterThanEquals,
+            Operator::Equals,
+            Operator::LessThan,
+            Operator::GreaterThan,
+            Operator::LessThanEquals,
+            Operator::GreaterThanEquals,
         ] {
             let mut overloads = Vec::with_capacity(8);
             let operator_name = operator.symbol();
@@ -348,6 +348,26 @@ impl<'source> Compiler<'source> {
                 };
                 overloads.push(function);
             }
+            this.name_resolution_map.insert(name, overloads);
+        }
+
+        for &operator in &[
+            Operator::Not
+        ] {
+            let mut overloads = Vec::with_capacity(1);
+            let operator_name = operator.symbol();
+            let name: Box<[_]> = Box::new([Some(operator_name), None]);
+            let primitive = PrimitiveType::Bool;
+            let typ = this.type_primitive(primitive);
+            let arguments = vec![typ];
+            let function = Function {
+                name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+                arguments: arguments.into(),
+                return_type: this.type_bool(),
+                is_extern: false,
+                is_builtin: true,
+            };
+            overloads.push(function);
             this.name_resolution_map.insert(name, overloads);
         }
 
