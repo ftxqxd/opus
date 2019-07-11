@@ -54,6 +54,7 @@ pub enum Token<'source> {
     And,
     Or,
     Not,
+    Import,
     EndOfFile,
 }
 
@@ -121,6 +122,7 @@ impl<'source> fmt::Display for Token<'source> {
             Or => "or",
             Not => "not",
             Record => "record",
+            Import => "import",
             EndOfFile => "<end of file>",
         })?;
         Ok(())
@@ -263,6 +265,7 @@ pub enum Definition<'source> {
     Extern(FunctionSignature<'source>),
     Type(&'source str, Box<Expression<'source>>),
     Record(&'source str, Box<[(&'source str, Box<Expression<'source>>)]>),
+    Import(Box<[u8]>),
 }
 
 /// The name of a function; e.g., `Foo _ _ Bar _`.
@@ -604,6 +607,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "and" => Ok(Token::And),
                     "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
+                    "import" => Ok(Token::Import),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -647,10 +651,18 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         None => return Err(Error::UnexpectedEndOfFile(&self.source[self.position..])),
                     };
                 }
+
                 Ok(Token::String(chars.into()))
             },
             Some(c) => Err(Error::UnexpectedCharacter(self.char_at(self.token_low), c)),
             None => Ok(Token::EndOfFile),
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<'source, Box<[u8]>> {
+        match self.parse_token()? {
+            Token::String(string) => Ok(string),
+            token => Err(Error::UnexpectedToken(&self.source[self.token_low..self.position], token)),
         }
     }
 
@@ -1062,6 +1074,13 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Record(name, fields.into())
+            },
+            Token::Import => {
+                let _ = self.parse_token();
+                let path = self.parse_string()?;
+                span = &self.source[low..self.position];
+
+                Definition::Import(path)
             },
             _ => {
                 let signature = self.parse_function_signature()?;

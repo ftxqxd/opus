@@ -1,6 +1,7 @@
 use std::fmt;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use typed_arena::Arena;
 use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, Operator};
 use crate::frontend::Options;
@@ -16,7 +17,8 @@ pub struct Compiler<'source> {
 
     pub options: Options,
 
-    pub source: &'source str,
+    pub sources: Vec<&'source str>,
+    pub filenames: Vec<PathBuf>,
 
     primitive_types: Box<[TypeId; PrimitiveType::NumberOfPrimitives as usize]>,
     type_arena: &'source Arena<Type>,
@@ -243,7 +245,7 @@ pub enum PrimitiveType {
 }
 
 impl<'source> Compiler<'source> {
-    pub fn new(options: Options, source: &'source str, type_arena: &'source mut Arena<Type>) -> Self {
+    pub fn new(options: Options, type_arena: &'source mut Arena<Type>) -> Self {
         const SIZE: usize = PrimitiveType::NumberOfPrimitives as usize;
         let mut primitive_types = Box::new([TypeId(0 as *mut _); SIZE]);
         for i in 0..SIZE {
@@ -274,7 +276,8 @@ impl<'source> Compiler<'source> {
             statement_spans: HashMap::with_capacity(1024),
             definition_spans: HashMap::with_capacity(64),
             options,
-            source,
+            sources: vec![],
+            filenames: vec![],
             type_arena,
             type_resolution_map: HashMap::with_capacity(32),
             reverse_type_resolution_map: HashMap::with_capacity(32),
@@ -541,111 +544,111 @@ impl<'source> Compiler<'source> {
         use Error::*;
         use crate::frontend::print_span;
         use crate::parse::Error::*;
-        eprint!("Error: ");
+        eprint!("\x1b[31;1mError:\x1b[0m ");
         match *error {
             ParseError(UnexpectedCharacter(span, c)) => {
                 eprintln!("unexpected character: {}", c);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ParseError(UnexpectedEndOfFile(span)) => {
                 eprintln!("unexpected end of file");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ParseError(InvalidEscapeSequence(span)) => {
                 eprintln!("invalid escape sequence");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ParseError(UnexpectedToken(span, ref token)) => {
                 eprintln!("unexpected token: {}", token);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ParseError(ExpectedFoundToken { span, ref expected, ref found }) => {
                 eprintln!("unexpected token: expected {}, found {}", expected, found);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ParseError(ExpectedLowercaseIdentifier(span, ref token)) => {
                 eprintln!("unexpected token: expected lowercase identifier, found {}", token);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ParseError(InvalidNumericSize(span, size)) => {
                 eprintln!("invalid numeric size: {}", size);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             UndefinedVariable(span) => {
                 eprintln!("undefined variable: {}", span);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ShadowedName(span) => {
                 eprintln!("shadowed variable: {}", span);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             UndefinedFunction(span, ref identifier) => {
                 eprintln!("undefined function: {}", FunctionIdentifierPrinter(self, identifier));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             NoOverloadForFunction(span, ref identifier) => {
                 eprintln!("no matching overload for function: {}", FunctionIdentifierPrinter(self, identifier));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             AmbiguousOverload(span, ref identifier) => {
                 eprintln!("call to overloaded function is ambiguous: {}", FunctionIdentifierPrinter(self, identifier));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             UnexpectedType { span, expected, found } => {
                 eprintln!("invalid type: expected {}, found {}", TypePrinter(self, expected), TypePrinter(self, found));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             InvalidOperandType { span, typ } => {
                 eprintln!("invalid operand type: {}", TypePrinter(self, typ));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             InvalidOperandTypes { span, operator, left, right } => {
                 eprintln!("invalid operand types: {} {} {}", TypePrinter(self, left), operator.symbol(), TypePrinter(self, right));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             FunctionMightNotReturn(span) => {
                 eprintln!("function might not return");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             BreakOutsideLoop(span) => {
                 eprintln!("break outside loop");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ContinueOutsideLoop(span) => {
                 eprintln!("continue outside loop");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             InvalidLvalue(span) => {
                 eprintln!("invalid lvalue");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ImmutableLvalue(span) => {
                 eprintln!("lvalue is immutable");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             ArrayPointerToNonArray(span) => {
                 eprintln!("attempt to take array reference to non-array lvalue");
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             InvalidCast { span, from, to } => {
                 eprintln!("invalid cast: {} to {}", TypePrinter(self, from), TypePrinter(self, to));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             InvalidExternFunctionName(span, ref function) => {
                 eprintln!("invalid extern function signature: {}", FunctionPrinter(self, function));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             UndefinedType(span) => {
                 eprintln!("undefined type: {}", span);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             FieldAccessOnNonRecord(span, typ) => {
                 eprintln!("attempt to set or access field of non-record: {}", TypePrinter(self, typ));
-                print_span(self.source, span);
+                print_span(&self, span);
             },
             FieldDoesNotExist(span, typ, field_name) => {
                 eprintln!("type {} has no field named '{}'", TypePrinter(self, typ), field_name);
-                print_span(self.source, span);
+                print_span(&self, span);
             },
         }
     }
@@ -682,19 +685,21 @@ impl<'source> Compiler<'source> {
         }
     }
 
-    pub fn load_type_definition(&mut self, definition: &'source Definition<'source>) {
+    pub fn preload_definition(&mut self, definition: &'source Definition<'source>) -> Option<&'source [u8]> {
         match *definition {
             Definition::Type(name, ..) | Definition::Record(name, ..) => {
                 // Make a new placeholder TypeId to be filled in with real type information later
                 let type_id = TypeId(self.type_arena.alloc(Type::Error));
                 self.type_resolution_map.insert(name, type_id);
                 self.reverse_type_resolution_map.insert(type_id.0, name);
+                None
             },
-            Definition::Function(..) | Definition::Extern(..) => {},
+            Definition::Function(..) | Definition::Extern(..) => None,
+            Definition::Import(ref path) => Some(&**path),
         }
     }
 
-    pub fn load_function_definition(&mut self, definition: &'source Definition<'source>) {
+    pub fn finalize_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
             Definition::Function(ref signature, ..) | Definition::Extern(ref signature) => {
                 let name: Box<_> = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
@@ -743,6 +748,7 @@ impl<'source> Compiler<'source> {
                     *pointer = typ;
                 }
             },
+            Definition::Import(..) => {},
         }
     }
 
