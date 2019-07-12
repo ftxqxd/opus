@@ -40,12 +40,19 @@ pub enum Type {
     /// This is an internal type used to resolve integer literal types in function calls.  See
     /// `Compiler::lookup_function`.
     GenericInteger,
+    /// This is an internal type used to resolve procedure name expressions like `proc (Foo :)`
+    /// which don't specify types.
+    Generic,
     Bool,
     Null,
     Pointer(PointerType, TypeId),
     Record {
         name: Box<str>,
         fields: Box<[(Box<str>, TypeId)]>,
+    },
+    Function {
+        argument_types: Box<[TypeId]>,
+        return_type: TypeId,
     },
     Error,
 }
@@ -137,6 +144,7 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Natural32 => "nat32",
             Type::Natural64 => "nat64",
             Type::GenericInteger => "<integer>",
+            Type::Generic => "<unknown>",
             Type::Bool => "bool",
             Type::Null => "null",
             Type::Pointer(PointerType::Reference, subtype) => {
@@ -157,6 +165,19 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             },
             Type::Record { ref name, .. } => {
                 write!(formatter, "{}", name)?;
+                ""
+            },
+            Type::Function { ref argument_types, return_type } => {
+                write!(formatter, "proc (")?;
+                let mut printed_anything = false;
+                for &argument_type in argument_types.iter() {
+                    if printed_anything {
+                        write!(formatter, " ")?;
+                    }
+                    printed_anything = true;
+                    write!(formatter, ":{}", TypePrinter(self.0, argument_type))?;
+                }
+                write!(formatter, "): {}", TypePrinter(self.0, return_type))?;
                 ""
             },
             Type::Error => "<error>",
@@ -241,6 +262,7 @@ pub enum PrimitiveType {
     Null,
     Error,
     GenericInteger,
+    Generic,
     NumberOfPrimitives,
 }
 
@@ -262,6 +284,7 @@ impl<'source> Compiler<'source> {
                 9 => Type::Null,
                 10 => Type::Error,
                 11 => Type::GenericInteger,
+                12 => Type::Generic,
                 _ => unreachable!(),
             };
             let pointer = type_arena.alloc(type_info);
@@ -431,6 +454,10 @@ impl<'source> Compiler<'source> {
         self.new_type_id(Type::Pointer(PointerType::ArrayMutable, other))
     }
 
+    pub fn type_function(&self, argument_types: Box<[TypeId]>, return_type: TypeId) -> TypeId {
+        self.new_type_id(Type::Function { argument_types, return_type })
+    }
+
     pub fn can_autocast(&self, from: TypeId, to: TypeId) -> bool {
         if self.types_match(from, to) {
             return true
@@ -445,6 +472,8 @@ impl<'source> Compiler<'source> {
             | (_, &Type::Error) => true,
             // Used for function overload resolution
             (&Type::GenericInteger, _) if type2.is_integral() => true,
+            // Used for `proc` expression resolution
+            (&Type::Generic, _) => true,
             // mut -> ref, muts -> refs
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
                 if self.can_autocast_pointer_type(pointer_type1, pointer_type2) && self.types_match(typ1, typ2)
@@ -490,6 +519,7 @@ impl<'source> Compiler<'source> {
             (&Type::Natural32, &Type::Natural32) => true,
             (&Type::Natural64, &Type::Natural64) => true,
             (&Type::GenericInteger, &Type::GenericInteger) => true,
+            (&Type::Generic, &Type::Generic) => true,
             (&Type::Bool, &Type::Bool) => true,
             (&Type::Null, &Type::Null) => true,
             (&Type::Pointer(type1, subtype1), &Type::Pointer(type2, subtype2)) => type1 == type2 && self.types_match(subtype1, subtype2),
@@ -510,27 +540,45 @@ impl<'source> Compiler<'source> {
 
                 true
             },
+            (&Type::Function { argument_types: ref argument_types1, return_type: return_type1 }, &Type::Function { argument_types: ref argument_types2, return_type: return_type2 }) => {
+                if argument_types1.len() != argument_types2.len() {
+                    return false
+                }
+                if !self.types_match(return_type1, return_type2) {
+                    return false
+                }
+                for (&type1, &type2) in argument_types1.iter().zip(argument_types2.iter()) {
+                    if !self.types_match(type1, type2) {
+                        return false
+                    }
+                }
+                true
+            },
             (&Type::Error, &Type::Error) => true,
             _ => false,
         }
     }
 
-    fn types_match_allow_generic_integer(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
+    fn types_match_allow_generic(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
         let type1 = self.get_type_info(type_id1);
         let type2 = self.get_type_info(type_id2);
         match (type1, type2) {
             (&Type::GenericInteger, typ)
             | (typ, &Type::GenericInteger) if typ.is_integral() => true,
+            (&Type::Generic, _)
+            | (_, &Type::Generic) => true,
             _ => self.types_match(type_id1, type_id2),
         }
     }
 
-    fn types_match_default_generic_integer(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
+    fn types_match_default_generic(&self, type_id1: TypeId, type_id2: TypeId) -> bool {
         let type1 = self.get_type_info(type_id1);
         let type2 = self.get_type_info(type_id2);
         match (type1, type2) {
             (&Type::GenericInteger, &Type::Integer32)
             | (&Type::Integer32, &Type::GenericInteger) => true,
+            (&Type::Generic, _)
+            | (_, &Type::Generic) => false,
             _ => self.types_match(type_id1, type_id2),
         }
     }
@@ -790,26 +838,26 @@ impl<'source> Compiler<'source> {
                 vec![true; argument_types.len()],
                 |mut x, candidate| {
                     for i in 0..x.len() {
-                        x[i] &= self.types_match_allow_generic_integer(candidate.arguments[i], candidate1.arguments[i]);
+                        x[i] &= self.types_match_allow_generic(candidate.arguments[i], candidate1.arguments[i]);
                     }
                     x
                 }
             );
 
             // We need to be careful here, as if one of our argument types is a GenericInteger,
-            // there may be more than one match (as GenericInteger
-            // `types_match_allow_generic_integer`s with every integer type).  If possible, we want
-            // to select the match where the non-ignorable GenericInteger arguments are all
-            // Integer32; otherwise, we reject the call as ambiguous.
+            // there may be more than one match (as GenericInteger `types_match_allow_generic`s
+            // with every integer type).  If possible, we want to select the match where the
+            // non-ignorable GenericInteger arguments are all Integer32; otherwise, we reject the
+            // call as ambiguous.
             //
-            // That's what `types_match_default_generic_integer` is for: it treats `GenericInteger`
-            // as matching *only* `Integer32` (instead of any integer type).
+            // That's what `types_match_default_generic` is for: it treats `GenericInteger` as
+            // matching *only* `Integer32` (instead of any integer type).
             for function in candidates.iter()
                 .filter(|function| function.arguments.iter()
                         .zip(argument_types.iter())
                         .enumerate()
                         .filter(|&(i, _)| !ignorable[i])
-                        .all(|(_, (&x, &y))| self.types_match_default_generic_integer(x, y)))
+                        .all(|(_, (&x, &y))| self.types_match_default_generic(x, y)))
             {
                 // We have a match!
                 return Some(function)

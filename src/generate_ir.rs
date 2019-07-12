@@ -30,6 +30,8 @@ pub enum Instruction<'source> {
     LessThanEquals(VariableId, VariableId, VariableId),
     GreaterThanEquals(VariableId, VariableId, VariableId),
 
+    Function(VariableId, &'source Function),
+
     Not(VariableId, VariableId),
     Negate(VariableId, VariableId),
 
@@ -590,6 +592,24 @@ impl<'source> IrGenerator<'source> {
             Expression::Parentheses(ref subexpression) => {
                 self.generate_ir_from_expression(subexpression, expected_type)
             },
+            Expression::Procedure(ref name, ref types) => {
+                let argument_types: Box<[_]> = types.iter()
+                    .map(|x| x.as_ref().map(|t| self.compiler.resolve_type(t)).unwrap_or(self.compiler.type_primitive(PrimitiveType::Generic))).collect();
+
+                if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
+                    self.generate_error()
+                } else {
+                    if let Some(function) = self.compiler.lookup_function(expression_span, name, &argument_types) {
+                        let argument_type_ids = function.arguments.clone();
+                        let return_type_id = function.return_type;
+                        let variable = self.new_variable(Variable { typ: self.compiler.type_function(argument_type_ids, return_type_id), is_temporary: true });
+                        self.instructions.push(Instruction::Function(variable, function));
+                        variable
+                    } else {
+                        self.generate_error()
+                    }
+                }
+            },
         }
     }
 
@@ -847,6 +867,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::GreaterThan(variable1, variable2, variable3) => write!(f, "%{} = greaterthan %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::LessThanEquals(variable1, variable2, variable3) => write!(f, "%{} = lessthanequals %{}, %{}", variable1, variable2, variable3)?,
                 Instruction::GreaterThanEquals(variable1, variable2, variable3) => write!(f, "%{} = greaterthanequals %{}, %{}", variable1, variable2, variable3)?,
+
+                Instruction::Function(variable, function) => write!(f, "%{} = global ${}", variable, FunctionPrinter(self.compiler, function))?,
 
                 Instruction::Not(variable1, variable2) => write!(f, "%{} = not %{}", variable1, variable2)?,
                 Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,

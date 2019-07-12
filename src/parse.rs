@@ -55,6 +55,7 @@ pub enum Token<'source> {
     Or,
     Not,
     Import,
+    Proc,
     EndOfFile,
 }
 
@@ -123,6 +124,7 @@ impl<'source> fmt::Display for Token<'source> {
             Not => "not",
             Record => "record",
             Import => "import",
+            Proc => "proc",
             EndOfFile => "<end of file>",
         })?;
         Ok(())
@@ -229,6 +231,7 @@ pub enum Expression<'source> {
     Bool(bool),
     String(Box<[u8]>),
     Variable(&'source str),
+    Procedure(Box<FunctionName<'source>>, Box<[Option<Box<Expression<'source>>>]>),
     VariableDefinition(&'source str, Box<Expression<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Record(Box<Expression<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
@@ -608,6 +611,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
                     "import" => Ok(Token::Import),
+                    "proc" => Ok(Token::Proc),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
             },
@@ -853,6 +857,38 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.correct_precedence(&mut *expression_box);
                 self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 return Ok(expression_box)
+            },
+            Token::Proc => {
+                self.expect(&Token::LeftParenthesis)?;
+                let mut name = vec![];
+                let mut types = vec![];
+                loop {
+                    let part_option = self.parse_function_name_part()?;
+                    if let Some(part) = part_option {
+                        name.push(Some(part));
+                    } else {
+                        match self.parse_token()? {
+                            Token::Colon => {
+                                let position = self.real_position;
+                                name.push(None);
+                                if let Ok(typ) = self.parse_atom() {
+                                    types.push(Some(typ));
+                                } else {
+                                    self.real_position = position;
+                                    self.position = position;
+                                    self.peeked_token = None;
+                                    types.push(None);
+                                }
+                            },
+                            Token::RightParenthesis => break,
+                            t => {
+                                let span = &self.source[low..self.position];
+                                return Err(Error::UnexpectedToken(span, t))
+                            }
+                        }
+                    }
+                }
+                Expression::Procedure(name.into(), types.into())
             },
             t => {
                 let span = &self.source[low..self.position];
@@ -1107,28 +1143,21 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
         self.ignore_dents += 1;
         loop {
-            match self.parse_token()? {
-                Token::UppercaseIdentifier(part) => {
-                    name.push(Some(part));
-                },
-                ref t if Operator::binary_from_token(t).is_some() && *t != Token::And && *t != Token::Or => {
-                    let operator = Operator::binary_from_token(t).unwrap();
-                    name.push(Some(operator.symbol()));
-                },
-                ref t if Operator::unary_from_token(t).is_some() => {
-                    let operator = Operator::unary_from_token(t).unwrap();
-                    name.push(Some(operator.symbol()));
-                },
-                Token::LowercaseIdentifier(identifier) => {
-                    self.expect(&Token::Colon)?;
-                    let typ = self.parse_atom()?;
-                    name.push(None);
-                    arguments.push((identifier, typ));
-                },
-                Token::RightParenthesis => break,
-                t => {
-                    let span = &self.source[low..self.position];
-                    return Err(Error::UnexpectedToken(span, t))
+            let part_option = self.parse_function_name_part()?;
+            match part_option {
+                Some(part) => name.push(Some(part)),
+                _ => match self.parse_token()? {
+                    Token::LowercaseIdentifier(identifier) => {
+                        self.expect(&Token::Colon)?;
+                        let typ = self.parse_atom()?;
+                        name.push(None);
+                        arguments.push((identifier, typ));
+                    },
+                    Token::RightParenthesis => break,
+                    t => {
+                        let span = &self.source[low..self.position];
+                        return Err(Error::UnexpectedToken(span, t))
+                    },
                 },
             }
         }
@@ -1141,6 +1170,26 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             name: name.into(),
             arguments,
             return_type,
+        })
+    }
+
+    fn parse_function_name_part(&mut self) -> Result<'source, Option<&'source str>> {
+        Ok(match self.peek_token()? {
+            Token::UppercaseIdentifier(part) => {
+                let _ = self.parse_token();
+                Some(part)
+            },
+            ref t if Operator::binary_from_token(t).is_some() && *t != Token::And && *t != Token::Or => {
+                let _ = self.parse_token();
+                let operator = Operator::binary_from_token(t).unwrap();
+                Some(operator.symbol())
+            },
+            ref t if Operator::unary_from_token(t).is_some() => {
+                let _ = self.parse_token();
+                let operator = Operator::unary_from_token(t).unwrap();
+                Some(operator.symbol())
+            },
+            _ => None,
         })
     }
 }

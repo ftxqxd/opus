@@ -23,8 +23,8 @@ pub fn initialize<W: Write>(compiler: &Compiler, output: &mut W) -> io::Result<(
         if let Type::Record { ref name, ref fields } = *typ {
             write!(output, "struct {} {{", name)?;
             for &(ref field_name, field_type) in fields.iter() {
-                translate_type_to_c(compiler, output, field_type)?;
-                write!(output, " {};", field_name)?;
+                translate_type_to_c(compiler, output, field_type, Some(field_name))?;
+                write!(output, ";")?;
             }
             writeln!(output, "}};")?;
         }
@@ -57,8 +57,8 @@ pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Resu
         }
 
         write!(output, "\t")?;
-        translate_type_to_c(&ir.compiler, output, variable.typ)?;
-        write!(output, " var{};\n", i)?;
+        translate_type_to_c(&ir.compiler, output, variable.typ, Some(&format!("var{}", i)))?;
+        write!(output, ";\n")?;
     }
     writeln!(output, "\tint last_instruction;")?;
 
@@ -75,7 +75,7 @@ pub fn translate_ir_to_c<W: Write>(ir: &IrGenerator, output: &mut W) -> io::Resu
 
 fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &Function, output: &mut W) -> io::Result<()> {
     // Write return type
-    translate_type_to_c(compiler, output, function.return_type)?;
+    translate_type_to_c(compiler, output, function.return_type, None)?;
     write!(output, " ")?;
     mangle_function_name(compiler, function, output)?;
     write!(output, "(")?;
@@ -90,39 +90,66 @@ fn translate_function_signature_to_c<W: Write>(compiler: &Compiler, function: &F
         }
         written_anything = true;
 
-        translate_type_to_c(&compiler, output, argument_type)?;
-        write!(output, " var{}", i)?;
+        translate_type_to_c(&compiler, output, argument_type, Some(&format!("var{}", i)))?;
     }
     write!(output, ")")
 }
 
-fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeId) -> io::Result<()> {
+fn translate_type_to_c<W: Write>(compiler: &Compiler, output: &mut W, typ: TypeId, name: Option<&str>) -> io::Result<()> {
     let type_info = compiler.get_type_info(typ);
     match *type_info {
-        Type::Integer8 => write!(output, "int8_t"),
-        Type::Integer16 => write!(output, "int16_t"),
-        Type::Integer32 => write!(output, "int32_t"),
-        Type::Integer64 => write!(output, "int64_t"),
-        Type::Natural8 => write!(output, "uint8_t"),
-        Type::Natural16 => write!(output, "uint16_t"),
-        Type::Natural32 => write!(output, "uint32_t"),
-        Type::Natural64 => write!(output, "uint64_t"),
-        Type::GenericInteger => unreachable!(),
-        Type::Null => write!(output, "_opust_null"),
-        Type::Bool => write!(output, "_opust_bool"),
+        Type::Integer8 => write!(output, "int8_t")?,
+        Type::Integer16 => write!(output, "int16_t")?,
+        Type::Integer32 => write!(output, "int32_t")?,
+        Type::Integer64 => write!(output, "int64_t")?,
+        Type::Natural8 => write!(output, "uint8_t")?,
+        Type::Natural16 => write!(output, "uint16_t")?,
+        Type::Natural32 => write!(output, "uint32_t")?,
+        Type::Natural64 => write!(output, "uint64_t")?,
+        Type::GenericInteger | Type::Generic => unreachable!(),
+        Type::Null => write!(output, "_opust_null")?,
+        Type::Bool => write!(output, "_opust_bool")?,
         Type::Pointer(PointerType::Reference, subtype) | Type::Pointer(PointerType::Array, subtype) => {
-            translate_type_to_c(compiler, output, subtype)?;
-            write!(output, " const *")
+            let name = format!("const *{}", name.unwrap_or(""));
+            translate_type_to_c(compiler, output, subtype, Some(&name))?;
+            return Ok(())
         },
         Type::Pointer(PointerType::Mutable, subtype) | Type::Pointer(PointerType::ArrayMutable, subtype) => {
-            translate_type_to_c(compiler, output, subtype)?;
-            write!(output, " *")
+            let name = format!("*{}", name.unwrap_or(""));
+            translate_type_to_c(compiler, output, subtype, Some(&name))?;
+            return Ok(())
         },
         Type::Record { ref name, .. } => {
-            write!(output, "struct {}", name)
+            write!(output, "struct {}", name)?;
         },
-        Type::Error => write!(output, "internal_compiler_error"),
+        Type::Function { ref argument_types, return_type } => {
+            let name = format!("(*{})(", name.unwrap_or(""));
+            let mut name: Vec<_> = name.into();
+            let mut first = true;
+
+            if argument_types.len() == 0{
+                name.extend_from_slice(b"void");
+            }
+            for &argument_type in argument_types.iter() {
+                if !first {
+                    name.extend_from_slice(b", ");
+                }
+                first = false;
+                translate_type_to_c(compiler, &mut name, argument_type, None)?;
+            }
+            name.extend_from_slice(b")");
+
+            translate_type_to_c(compiler, output, return_type, Some(&String::from_utf8_lossy(&name)))?;
+            return Ok(())
+        },
+        Type::Error => write!(output, "internal_compiler_error")?,
     }
+
+    if let Some(name) = name {
+        write!(output, " {}", name)?;
+    }
+
+    Ok(())
 }
 
 fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instruction_index: usize) -> io::Result<()> {
@@ -167,10 +194,10 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         },
 
         Instruction::Allocate(destination) => {
-            writeln!(output, ";")?;
+            write!(output, ";\n\t")?;
             let typ = ir.get_lvalue_type(destination);
-            translate_type_to_c(&ir.compiler, output, typ)?;
-            writeln!(output, " storage{};", destination)?;
+            translate_type_to_c(&ir.compiler, output, typ, Some(&format!("storage{}", destination)))?;
+            write!(output, ";\n\t")?;
             writeln!(output, "var{} = &storage{};", destination, destination)?;
         },
         Instruction::Load(destination, source) => writeln!(output, "var{} = *var{};", destination, source)?,
@@ -189,13 +216,19 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         Instruction::LessThanEquals(destination, left, right) => writeln!(output, "var{} = var{} <= var{};", destination, left, right)?,
         Instruction::GreaterThanEquals(destination, left, right) => writeln!(output, "var{} = var{} >= var{};", destination, left, right)?,
 
+        Instruction::Function(destination, function) => {
+            write!(output, "var{} = ", destination)?;
+            mangle_function_name(ir.compiler, function, output)?;
+            writeln!(output, ";")?
+        },
+
         Instruction::Not(destination, value) => writeln!(output, "var{} = !var{};", destination, value)?,
         Instruction::Negate(destination, value) => writeln!(output, "var{} = -var{};", destination, value)?,
 
         Instruction::Cast(destination, source) => {
             let type1 = ir.variables[destination].typ;
             write!(output, "var{} = (", destination)?;
-            translate_type_to_c(&ir.compiler, output, type1)?;
+            translate_type_to_c(&ir.compiler, output, type1, None)?;
             writeln!(output, ") var{};", source)?;
         },
 
@@ -278,7 +311,7 @@ fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) 
         Type::Natural16 => write!(output, "nat16"),
         Type::Natural32 => write!(output, "nat32"),
         Type::Natural64 => write!(output, "nat64"),
-        Type::GenericInteger => unreachable!(),
+        Type::GenericInteger | Type::Generic => unreachable!(),
         Type::Null => write!(output, "null"),
         Type::Bool => write!(output, "bool"),
         Type::Pointer(pointer_type, subtype) => {
@@ -293,6 +326,16 @@ fn mangle_type_name<W: Write>(compiler: &Compiler, typ: TypeId, output: &mut W) 
         },
         Type::Record { ref name, .. } => {
             write!(output, "Record{}", name)
+        },
+        Type::Function { ref argument_types, return_type } => {
+            write!(output, "Function")?;
+            for &typ in argument_types.iter() {
+                write!(output, "Arg")?;
+                mangle_type_name(compiler, typ, output)?;
+            }
+            write!(output, "Returns")?;
+            mangle_type_name(compiler, return_type, output)?;
+            Ok(())
         },
         Type::Error => write!(output, "error"),
     }
