@@ -231,10 +231,10 @@ pub enum Expression<'source> {
     Bool(bool),
     String(Box<[u8]>),
     Variable(&'source str),
-    Procedure(Box<FunctionName<'source>>, Box<[Option<Box<Expression<'source>>>]>),
-    VariableDefinition(&'source str, Box<Expression<'source>>),
+    Procedure(Box<FunctionName<'source>>, Box<[Option<Box<Type<'source>>>]>),
+    VariableDefinition(&'source str, Box<Type<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
-    Record(Box<Expression<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
+    Record(Box<Type<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
     Operator(Operator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
     MutableReference(Box<Expression<'source>>),
@@ -243,7 +243,7 @@ pub enum Expression<'source> {
     Dereference(Box<Expression<'source>>),
     Field(&'source str, Box<Expression<'source>>),
     Index(Box<Expression<'source>>, Box<Expression<'source>>),
-    Cast(Box<Expression<'source>>, Box<Expression<'source>>),
+    Cast(Box<Expression<'source>>, Box<Type<'source>>),
     Negate(Box<Expression<'source>>),
     Parentheses(Box<Expression<'source>>),
 }
@@ -260,14 +260,25 @@ pub enum Statement<'source> {
     Continue,
 }
 
+#[derive(Debug, PartialEq)]
+pub enum Type<'source> {
+    Name(&'source str),
+    Null,
+    Reference(Box<Type<'source>>),
+    MutableReference(Box<Type<'source>>),
+    ArrayReference(Box<Type<'source>>),
+    MutableArrayReference(Box<Type<'source>>),
+    Proc(Box<[Box<Type<'source>>]>, Box<Type<'source>>),
+}
+
 pub type Block<'source> = [Box<Statement<'source>>];
 
 #[derive(Debug)]
 pub enum Definition<'source> {
     Function(FunctionSignature<'source>, Box<Block<'source>>),
     Extern(FunctionSignature<'source>),
-    Type(&'source str, Box<Expression<'source>>),
-    Record(&'source str, Box<[(&'source str, Box<Expression<'source>>)]>),
+    Type(&'source str, Box<Type<'source>>),
+    Record(&'source str, Box<[(&'source str, Box<Type<'source>>)]>),
     Import(Box<[u8]>),
 }
 
@@ -283,9 +294,9 @@ pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
     pub name: Box<FunctionName<'source>>,
     /// A list of `(name, type)` representing the names & types of the function's arguments.
-    pub arguments: Vec<(&'source str, Box<Expression<'source>>)>,
+    pub arguments: Vec<(&'source str, Box<Type<'source>>)>,
 
-    pub return_type: Box<Expression<'source>>,
+    pub return_type: Box<Type<'source>>,
 }
 
 impl<'source> fmt::Debug for FunctionSignature<'source> {
@@ -304,7 +315,7 @@ impl<'source> fmt::Debug for FunctionSignature<'source> {
             match *part {
                 Some(x) => write!(formatter, "{}", x)?,
                 None => {
-                    // FIXME: implement Display for Expression
+                    // FIXME: implement Display for Type?
                     write!(formatter, "{}: {:?}", self.arguments[i].0, self.arguments[i].1)?;
                     i += 1;
                 },
@@ -771,6 +782,56 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         }
     }
 
+    fn parse_type(&mut self) -> Result<'source, Box<Type<'source>>> {
+        let token = self.parse_token()?;
+        let low = self.token_low;
+
+        let typ = match token {
+            Token::LowercaseIdentifier(s) => Type::Name(s),
+            Token::Null => Type::Null,
+            Token::Ref => {
+                let subtype = self.parse_type()?;
+                Type::Reference(subtype)
+            },
+            Token::Mut => {
+                let subtype = self.parse_type()?;
+                Type::MutableReference(subtype)
+            },
+            Token::Refs => {
+                let subtype = self.parse_type()?;
+                Type::ArrayReference(subtype)
+            },
+            Token::Muts => {
+                let subtype = self.parse_type()?;
+                Type::MutableArrayReference(subtype)
+            },
+            Token::Proc => {
+                self.expect(&Token::LeftParenthesis)?;
+                let mut argument_types = vec![];
+                loop {
+                    match self.peek_token()? {
+                        Token::RightParenthesis => {
+                            let _ = self.parse_token();
+                            break
+                        },
+                        _ => argument_types.push(self.parse_type()?),
+                    }
+                }
+                let return_type = self.parse_type()?;
+                Type::Proc(argument_types.into(), return_type)
+            },
+            t => {
+                let span = &self.source[low..self.position];
+                return Err(Error::UnexpectedToken(span, t))
+            },
+        };
+
+        let type_box = Box::new(typ);
+        self.compiler.type_spans.insert(&*type_box, &self.source[low..self.position]);
+
+        Ok(type_box)
+    }
+
     fn parse_atom(&mut self) -> Result<'source, Box<Expression<'source>>> {
         let token = self.parse_token()?;
         let low = self.token_low;
@@ -834,7 +895,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Var => {
                 let variable_name = self.parse_lowercase_identifier()?;
                 self.expect(&Token::Colon)?;
-                let type_expression = self.parse_atom()?;
+                let type_expression = self.parse_type()?;
                 Expression::VariableDefinition(variable_name, type_expression)
             },
             Token::Null => {
@@ -871,7 +932,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                             Token::Colon => {
                                 let position = self.real_position;
                                 name.push(None);
-                                if let Ok(typ) = self.parse_atom() {
+                                if let Ok(typ) = self.parse_type() {
                                     types.push(Some(typ));
                                 } else {
                                     self.real_position = position;
@@ -889,6 +950,31 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     }
                 }
                 Expression::Procedure(name.into(), types.into())
+            },
+            Token::Record => {
+                let name = self.parse_lowercase_identifier()?;
+                let type_box = Box::new(Type::Name(name));
+                self.compiler.type_spans.insert(&*type_box, &self.source[low..self.position]);
+
+                self.expect(&Token::LeftBrace)?;
+
+                self.ignore_dents += 1;
+                let mut fields = vec![];
+                loop {
+                    match self.parse_token()? {
+                        Token::LowercaseIdentifier(field_name) => {
+                            self.expect(&Token::ColonEquals)?;
+                            let value = self.parse_expression()?;
+                            fields.push((field_name, value));
+                        },
+                        Token::RightBrace => break,
+                        token => {
+                            return Err(Error::UnexpectedToken(&self.source[self.token_low..self.position], token))
+                        }
+                    }
+                }
+                self.ignore_dents -= 1;
+                Expression::Record(type_box, fields.into())
             },
             t => {
                 let span = &self.source[low..self.position];
@@ -921,30 +1007,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     expression_box = Box::new(Expression::Index(expression_box, index));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
-                Token::LeftBrace => {
-                    let _ = self.parse_token();
-                    self.ignore_dents += 1;
-                    let mut fields = vec![];
-                    loop {
-                        match self.parse_token()? {
-                            Token::LowercaseIdentifier(field_name) => {
-                                self.expect(&Token::ColonEquals)?;
-                                let value = self.parse_expression()?;
-                                fields.push((field_name, value));
-                            },
-                            Token::RightBrace => break,
-                            token => {
-                                return Err(Error::UnexpectedToken(&self.source[self.token_low..self.position], token))
-                            }
-                        }
-                    }
-                    self.ignore_dents -= 1;
-                    expression_box = Box::new(Expression::Record(expression_box, fields.into()));
-                    self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
-                },
                 Token::T_PAAMAYIM_NEKUDOTAYIM => {
                     let _ = self.parse_token();
-                    let typ = self.parse_atom()?;
+                    let typ = self.parse_type()?;
                     expression_box = Box::new(Expression::Cast(expression_box, typ));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
@@ -966,7 +1031,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 match self.peek_token()? {
                     Token::Colon => {
                         let _ = self.parse_token();
-                        let typ = self.parse_atom()?;
+                        let typ = self.parse_type()?;
                         let left_span = &self.source[low..self.position];
 
                         match self.peek_token()? {
@@ -1086,7 +1151,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let name = self.parse_lowercase_identifier()?;
                 self.expect(&Token::ColonEquals)?;
-                let typ = self.parse_atom()?;
+                let typ = self.parse_type()?;
                 span = &self.source[low..self.position];
 
                 Definition::Type(name, typ)
@@ -1104,7 +1169,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     }
                     let field_name = self.parse_lowercase_identifier()?;
                     self.expect(&Token::Colon)?;
-                    let field_type = self.parse_atom()?;
+                    let field_type = self.parse_type()?;
                     fields.push((field_name, field_type));
                 }
                 span = &self.source[low..self.position];
@@ -1149,7 +1214,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 _ => match self.parse_token()? {
                     Token::LowercaseIdentifier(identifier) => {
                         self.expect(&Token::Colon)?;
-                        let typ = self.parse_atom()?;
+                        let typ = self.parse_type()?;
                         name.push(None);
                         arguments.push((identifier, typ));
                     },
@@ -1164,7 +1229,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         self.ignore_dents -= 1;
 
         self.expect(&Token::Colon)?;
-        let return_type = self.parse_atom()?;
+        let return_type = self.parse_type()?;
 
         Ok(FunctionSignature {
             name: name.into(),

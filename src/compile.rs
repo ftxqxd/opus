@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use typed_arena::Arena;
-use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, Operator};
+use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, Operator, self};
 use crate::frontend::Options;
 
 pub struct Compiler<'source> {
@@ -12,6 +12,7 @@ pub struct Compiler<'source> {
     pub has_errors: Cell<bool>,
 
     pub expression_spans: HashMap<*const Expression<'source>, &'source str>,
+    pub type_spans: HashMap<*const parse::Type<'source>, &'source str>,
     pub statement_spans: HashMap<*const Statement<'source>, &'source str>,
     pub definition_spans: HashMap<*const Definition<'source>, &'source str>,
 
@@ -175,9 +176,9 @@ impl<'source> fmt::Display for TypePrinter<'source> {
                         write!(formatter, " ")?;
                     }
                     printed_anything = true;
-                    write!(formatter, ":{}", TypePrinter(self.0, argument_type))?;
+                    write!(formatter, "{}", TypePrinter(self.0, argument_type))?;
                 }
-                write!(formatter, "): {}", TypePrinter(self.0, return_type))?;
+                write!(formatter, ") {}", TypePrinter(self.0, return_type))?;
                 ""
             },
             Type::Error => "<error>",
@@ -296,6 +297,7 @@ impl<'source> Compiler<'source> {
             signature_resolution_map: HashMap::with_capacity(32),
             has_errors: Cell::new(false),
             expression_spans: HashMap::with_capacity(1024),
+            type_spans: HashMap::with_capacity(64),
             statement_spans: HashMap::with_capacity(1024),
             definition_spans: HashMap::with_capacity(64),
             options,
@@ -701,19 +703,19 @@ impl<'source> Compiler<'source> {
         }
     }
 
-    pub fn resolve_type(&self, typ: &Expression) -> TypeId {
-        let span = self.expression_span(typ);
+    pub fn resolve_type(&self, typ: &parse::Type) -> TypeId {
+        let span = self.type_span(typ);
         match *typ {
-            Expression::Variable("int8")  => self.type_primitive(PrimitiveType::Integer8),
-            Expression::Variable("int16") => self.type_primitive(PrimitiveType::Integer16),
-            Expression::Variable("int32") => self.type_primitive(PrimitiveType::Integer32),
-            Expression::Variable("int64") => self.type_primitive(PrimitiveType::Integer64),
-            Expression::Variable("nat8")  => self.type_primitive(PrimitiveType::Natural8),
-            Expression::Variable("nat16") => self.type_primitive(PrimitiveType::Natural16),
-            Expression::Variable("nat32") => self.type_primitive(PrimitiveType::Natural32),
-            Expression::Variable("nat64") => self.type_primitive(PrimitiveType::Natural64),
-            Expression::Variable("bool")  => self.type_primitive(PrimitiveType::Bool),
-            Expression::Variable(name) => {
+            parse::Type::Name("int8")  => self.type_primitive(PrimitiveType::Integer8),
+            parse::Type::Name("int16") => self.type_primitive(PrimitiveType::Integer16),
+            parse::Type::Name("int32") => self.type_primitive(PrimitiveType::Integer32),
+            parse::Type::Name("int64") => self.type_primitive(PrimitiveType::Integer64),
+            parse::Type::Name("nat8")  => self.type_primitive(PrimitiveType::Natural8),
+            parse::Type::Name("nat16") => self.type_primitive(PrimitiveType::Natural16),
+            parse::Type::Name("nat32") => self.type_primitive(PrimitiveType::Natural32),
+            parse::Type::Name("nat64") => self.type_primitive(PrimitiveType::Natural64),
+            parse::Type::Name("bool")  => self.type_primitive(PrimitiveType::Bool),
+            parse::Type::Name(name) => {
                 if let Some(&typ) = self.type_resolution_map.get(name) {
                     typ
                 } else {
@@ -721,14 +723,17 @@ impl<'source> Compiler<'source> {
                     self.type_error()
                 }
             },
-            Expression::Null => self.type_null(),
-            Expression::Reference(ref subexpression) => self.type_ref(self.resolve_type(subexpression)),
-            Expression::MutableReference(ref subexpression) => self.type_mut(self.resolve_type(subexpression)),
-            Expression::ArrayReference(ref subexpression) => self.type_refs(self.resolve_type(subexpression)),
-            Expression::MutableArrayReference(ref subexpression) => self.type_muts(self.resolve_type(subexpression)),
-            _ => {
-                self.report_error(Error::UndefinedType(span));
-                self.type_error()
+            parse::Type::Null => self.type_null(),
+            parse::Type::Reference(ref subtype) => self.type_ref(self.resolve_type(subtype)),
+            parse::Type::MutableReference(ref subtype) => self.type_mut(self.resolve_type(subtype)),
+            parse::Type::ArrayReference(ref subtype) => self.type_refs(self.resolve_type(subtype)),
+            parse::Type::MutableArrayReference(ref subtype) => self.type_muts(self.resolve_type(subtype)),
+            parse::Type::Proc(ref argument_types, ref return_type) => {
+                let type_info = Type::Function {
+                    argument_types: argument_types.iter().map(|x| self.resolve_type(x)).collect(),
+                    return_type: self.resolve_type(return_type),
+                };
+                self.new_type_id(type_info)
             },
         }
     }
@@ -877,6 +882,10 @@ impl<'source> Compiler<'source> {
 
     pub fn expression_span(&self, expression: &Expression<'source>) -> &'source str {
         self.expression_spans[&(expression as *const _)]
+    }
+
+    pub fn type_span(&self, typ: &parse::Type<'source>) -> &'source str {
+        self.type_spans[&(typ as *const _)]
     }
 
     pub fn definition_span(&self, definition: &Definition<'source>) -> &'source str {
