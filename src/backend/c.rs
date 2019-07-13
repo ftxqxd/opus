@@ -181,8 +181,7 @@ fn translate_instruction_to_c<W: Write>(ir: &IrGenerator, output: &mut W, instru
         },
 
         Instruction::Call(destination, function, ref arguments) => {
-            write!(output, "var{} = ", destination)?;
-            mangle_function_name(&ir.compiler, function, output)?;
+            write!(output, "var{} = var{}", destination, function)?;
             write!(output, "(")?;
             for (i, argument) in arguments.iter().enumerate() {
                 if i > 0 {

@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use typed_arena::Arena;
-use crate::parse::{FunctionSignature, FunctionName, Definition, Expression, Statement, Operator, self};
+use crate::parse::{self, FunctionSignature, FunctionName, Definition, Expression, Statement, Operator, Name};
 use crate::frontend::Options;
 
 pub struct Compiler<'source> {
@@ -88,7 +88,7 @@ pub struct FunctionIdentifier {
 pub enum Error<'source> {
     ParseError(crate::parse::Error<'source>),
     UndefinedVariable(&'source str),
-    ShadowedName(&'source str),
+    ShadowedName(&'source str, Name<'source>),
     UndefinedFunction(&'source str, FunctionIdentifier),
     NoOverloadForFunction(&'source str, FunctionIdentifier),
     AmbiguousOverload(&'source str, FunctionIdentifier),
@@ -106,6 +106,8 @@ pub enum Error<'source> {
     UndefinedType(&'source str),
     FieldAccessOnNonRecord(&'source str, TypeId),
     FieldDoesNotExist(&'source str, TypeId, &'source str),
+    CallOfNonFunction(&'source str, TypeId),
+    ReferenceToBuiltinFunction(&'source str),
 }
 
 impl Type {
@@ -617,7 +619,7 @@ impl<'source> Compiler<'source> {
                 print_span(&self, span);
             },
             ParseError(ExpectedLowercaseIdentifier(span, ref token)) => {
-                eprintln!("unexpected token: expected lowercase identifier, found {}", token);
+                eprintln!("unexpected token: expected name, found {}", token);
                 print_span(&self, span);
             },
             ParseError(InvalidNumericSize(span, size)) => {
@@ -628,8 +630,8 @@ impl<'source> Compiler<'source> {
                 eprintln!("undefined variable: {}", span);
                 print_span(&self, span);
             },
-            ShadowedName(span) => {
-                eprintln!("shadowed variable: {}", span);
+            ShadowedName(span, ref name) => {
+                eprintln!("shadowed variable: {}", name);
                 print_span(&self, span);
             },
             UndefinedFunction(span, ref identifier) => {
@@ -698,6 +700,14 @@ impl<'source> Compiler<'source> {
             },
             FieldDoesNotExist(span, typ, field_name) => {
                 eprintln!("type {} has no field named '{}'", TypePrinter(self, typ), field_name);
+                print_span(&self, span);
+            },
+            CallOfNonFunction(span, typ) => {
+                eprintln!("cannot call value of type {}", TypePrinter(self, typ));
+                print_span(&self, span);
+            },
+            ReferenceToBuiltinFunction(span) => {
+                eprintln!("reference to built-in function");
                 print_span(&self, span);
             },
         }

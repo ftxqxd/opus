@@ -27,6 +27,7 @@ pub enum Token<'source> {
     At,
     Tilde,
     Dot,
+    QuestionMark,
     Integer(u64, Option<(bool, u8)>),
     String(Box<[u8]>),
     LowercaseIdentifier(&'source str),
@@ -86,6 +87,7 @@ impl<'source> fmt::Display for Token<'source> {
             At => "@",
             Tilde => "¯",
             Dot => ".",
+            QuestionMark => "?",
             Integer(value, None) => {
                 buffer = format!("{}", value);
                 &buffer
@@ -232,7 +234,7 @@ pub enum Expression<'source> {
     String(Box<[u8]>),
     Variable(&'source str),
     Procedure(Box<FunctionName<'source>>, Box<[Option<Box<Type<'source>>>]>),
-    VariableDefinition(&'source str, Box<Type<'source>>),
+    VariableDefinition(Name<'source>, Box<Type<'source>>),
     Call(Box<FunctionName<'source>>, Vec<Box<Expression<'source>>>),
     Record(Box<Type<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
     Operator(Operator, Box<Expression<'source>>, Box<Expression<'source>>),
@@ -251,7 +253,7 @@ pub enum Expression<'source> {
 #[derive(Debug)]
 pub enum Statement<'source> {
     Expression(Box<Expression<'source>>),
-    VariableDefinition(&'source str, Box<Expression<'source>>),
+    VariableDefinition(Name<'source>, Box<Expression<'source>>),
     Assignment(Box<Expression<'source>>, Box<Expression<'source>>),
     Return(Box<Expression<'source>>),
     If(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
@@ -282,6 +284,42 @@ pub enum Definition<'source> {
     Import(Box<[u8]>),
 }
 
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum Name<'source> {
+    Simple(&'source str),
+    Procedure(Box<FunctionName<'source>>),
+}
+
+impl<'source> fmt::Display for Name<'source> {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Name::Simple(name) => write!(formatter, "{}", name),
+            Name::Procedure(ref function_name) => {
+                write!(formatter, "proc (")?;
+
+                let mut written_anything = false;
+
+                for part in function_name.iter() {
+                    if written_anything {
+                        write!(formatter, " ")?;
+                    }
+
+                    match *part {
+                        Some(x) => write!(formatter, "{}", x)?,
+                        None => {
+                            write!(formatter, "?")?;
+                        },
+                    }
+
+                    written_anything = true;
+                }
+
+                write!(formatter, ")")
+            },
+        }
+    }
+}
+
 /// The name of a function; e.g., `Foo _ _ Bar _`.
 ///
 /// Uppercase identifiers which form parts of the name are represented by `Some(name)`; 'gaps' for
@@ -294,7 +332,7 @@ pub struct FunctionSignature<'source> {
     /// The name of the function, i.e., its signature without its argument names & types.
     pub name: Box<FunctionName<'source>>,
     /// A list of `(name, type)` representing the names & types of the function's arguments.
-    pub arguments: Vec<(&'source str, Box<Type<'source>>)>,
+    pub arguments: Vec<(Name<'source>, Box<Type<'source>>)>,
 
     pub return_type: Box<Type<'source>>,
 }
@@ -529,6 +567,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('@') => Ok(Token::At),
             Some('~') | Some('¯') => Ok(Token::Tilde),
             Some('.') => Ok(Token::Dot),
+            Some('?') => Ok(Token::QuestionMark),
             Some(c @ '0'..= '9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'..= '9') = self.peek() {
@@ -707,6 +746,36 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     fn parse_lowercase_identifier(&mut self) -> Result<'source, &'source str> {
         match self.parse_token()? {
             Token::LowercaseIdentifier(s) => Ok(s),
+            t => {
+                let span = &self.source[self.token_low..self.position];
+                Err(Error::ExpectedLowercaseIdentifier(span, t))
+            },
+        }
+    }
+
+    fn parse_name(&mut self) -> Result<'source, Name<'source>> {
+        match self.parse_token()? {
+            Token::LowercaseIdentifier(s) => Ok(Name::Simple(s)),
+            Token::Proc => {
+                self.expect(&Token::LeftParenthesis)?;
+                let mut name = vec![];
+                loop {
+                    let part_option = self.parse_function_name_part()?;
+                    if let Some(part) = part_option {
+                        name.push(Some(part));
+                    } else {
+                        match self.parse_token()? {
+                            Token::Colon => name.push(None),
+                            Token::RightParenthesis => break,
+                            t => {
+                                let span = &self.source[self.token_low..self.position];
+                                return Err(Error::UnexpectedToken(span, t))
+                            },
+                        }
+                    }
+                }
+                Ok(Name::Procedure(name.into()))
+            },
             t => {
                 let span = &self.source[self.token_low..self.position];
                 Err(Error::ExpectedLowercaseIdentifier(span, t))
@@ -893,7 +962,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Expression::MutableArrayReference(subexpression)
             },
             Token::Var => {
-                let variable_name = self.parse_lowercase_identifier()?;
+                let variable_name = self.parse_name()?;
                 self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 Expression::VariableDefinition(variable_name, type_expression)
@@ -1027,7 +1096,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let statement = match token {
             Token::Var => {
                 let _ = self.parse_token();
-                let variable_name = self.parse_lowercase_identifier()?;
+                let variable_name = self.parse_name()?;
                 match self.peek_token()? {
                     Token::Colon => {
                         let _ = self.parse_token();
@@ -1201,7 +1270,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
         self.expect(&Token::LeftParenthesis)?;
-        let low = self.token_low;
 
         let mut name = vec![];
         let mut arguments = vec![];
@@ -1211,17 +1279,17 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             let part_option = self.parse_function_name_part()?;
             match part_option {
                 Some(part) => name.push(Some(part)),
-                _ => match self.parse_token()? {
-                    Token::LowercaseIdentifier(identifier) => {
+                _ => match self.peek_token()? {
+                    Token::RightParenthesis => {
+                        let _ = self.parse_token()?;
+                        break
+                    },
+                    _ => {
+                        let name2 = self.parse_name()?;
                         self.expect(&Token::Colon)?;
                         let typ = self.parse_type()?;
                         name.push(None);
-                        arguments.push((identifier, typ));
-                    },
-                    Token::RightParenthesis => break,
-                    t => {
-                        let span = &self.source[low..self.position];
-                        return Err(Error::UnexpectedToken(span, t))
+                        arguments.push((name2, typ));
                     },
                 },
             }

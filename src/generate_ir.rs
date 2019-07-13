@@ -1,7 +1,7 @@
 use std::mem;
 use std::fmt;
 use std::collections::HashMap;
-use crate::parse::{Expression, Statement, FunctionSignature, Block, Operator, FunctionName};
+use crate::parse::{Expression, Statement, FunctionSignature, Block, Operator, FunctionName, Name};
 use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, TypePrinter, FunctionPrinter};
 
 #[derive(Debug)]
@@ -11,7 +11,7 @@ pub enum Instruction<'source> {
     Bool(VariableId, bool),
     String(VariableId, Box<[u8]>),
 
-    Call(VariableId, &'source Function, Box<[VariableId]>),
+    Call(VariableId, VariableId, Box<[VariableId]>),
 
     Allocate(VariableId),
     Load(VariableId, VariableId),
@@ -57,7 +57,7 @@ pub struct Variable {
 
 pub struct IrGenerator<'source> {
     pub compiler: &'source Compiler<'source>,
-    pub locals: HashMap<&'source str, VariableId>,
+    pub locals: HashMap<Name<'source>, VariableId>,
     pub variables: Vec<Variable>,
     pub instructions: Vec<Instruction<'source>>,
     pub signature: &'source FunctionSignature<'source>,
@@ -74,7 +74,7 @@ pub struct IrGenerator<'source> {
     innermost_loop_begin: Option<usize>,
     /// An array of local variable names, in the order they were defined.  This stack is 'unwound'
     /// every time a block is exited, erasing all locals defined in the block from `self.locals`.
-    locals_stack: Vec<&'source str>,
+    locals_stack: Vec<Name<'source>>,
 }
 
 impl<'source> IrGenerator<'source> {
@@ -116,12 +116,12 @@ impl<'source> IrGenerator<'source> {
         }
 
         // Then generate argument *locals* that we can mutate etc.
-        for ((argument_id, &(name, _)), typ) in self.signature.arguments.iter().enumerate().zip(types.into_iter()) {
+        for ((argument_id, &(ref name, _)), typ) in self.signature.arguments.iter().enumerate().zip(types.into_iter()) {
             let typ = self.compiler.type_mut(typ);
             let variable_id = self.new_variable(Variable { typ, is_temporary: false });
             self.instructions.push(Instruction::Allocate(variable_id));
             self.instructions.push(Instruction::Store(variable_id, argument_id));
-            self.locals.insert(name, variable_id);
+            self.locals.insert(name.clone(), variable_id);
         }
 
         let diverges = self.generate_ir_from_block(block);
@@ -155,7 +155,7 @@ impl<'source> IrGenerator<'source> {
 
         while self.locals_stack.len() > locals_stack_length {
             let name = self.locals_stack.pop().unwrap();
-            self.locals.remove(name);
+            self.locals.remove(&name);
         }
 
         diverges
@@ -203,21 +203,22 @@ impl<'source> IrGenerator<'source> {
     /// Generate IR for a single statement.  Return `true` if the statement is guaranteed to
     /// diverge.
     fn generate_ir_from_statement(&mut self, statement: &'source Statement<'source>) -> bool {
+        let span = self.compiler.statement_span(statement);
         match *statement {
             Statement::Expression(ref expression) => {
                 self.generate_ir_from_expression(expression, None);
             },
-            Statement::VariableDefinition(name, ref value) => {
+            Statement::VariableDefinition(ref name, ref value) => {
                 let variable_id = self.generate_ir_from_expression(value, None);
                 let typ = self.variables[variable_id].typ;
                 if self.locals_stack.contains(&name) {
-                    self.compiler.report_error(Error::ShadowedName(name));
+                    self.compiler.report_error(Error::ShadowedName(span, name.clone()));
                 } else {
                     let new_variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(new_variable_id));
                     self.instructions.push(Instruction::Store(new_variable_id, variable_id));
-                    self.locals_stack.push(name);
-                    self.locals.insert(name, new_variable_id);
+                    self.locals_stack.push(name.clone());
+                    self.locals.insert(name.clone(), new_variable_id);
                 }
             },
             Statement::Assignment(ref left, ref right) => {
@@ -307,7 +308,6 @@ impl<'source> IrGenerator<'source> {
                     self.break_instructions_to_insert.push(self.instructions.len());
                     self.instructions.push(Instruction::BreakPlaceholder);
                 } else {
-                    let span = self.compiler.statement_span(statement);
                     self.compiler.report_error(Error::BreakOutsideLoop(span));
                 }
             },
@@ -315,7 +315,6 @@ impl<'source> IrGenerator<'source> {
                 if let Some(index) = self.innermost_loop_begin {
                     self.instructions.push(Instruction::Jump(index));
                 } else {
-                    let span = self.compiler.statement_span(statement);
                     self.compiler.report_error(Error::ContinueOutsideLoop(span));
                 }
             },
@@ -395,10 +394,9 @@ impl<'source> IrGenerator<'source> {
             Expression::Call(ref name, ref arguments) => {
                 let mut argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, Some(self.compiler.type_primitive(PrimitiveType::GenericInteger)))).collect();
                 let argument_spans = arguments.iter().map(|x| self.compiler.expression_span(x)).collect();
-                if let Some(function) = self.autocast_call_arguments(expression_span, name, &mut argument_variables, argument_spans) {
-                    let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
-                    self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
-                    variable
+                if let Some((function_variable, output_variable, _)) = self.get_function_call_variables(expression_span, name, &mut argument_variables, argument_spans) {
+                    self.instructions.push(Instruction::Call(output_variable, function_variable, (*argument_variables).into()));
+                    output_variable
                 } else {
                     self.generate_error()
                 }
@@ -478,16 +476,13 @@ impl<'source> IrGenerator<'source> {
                     let mut argument_variables = vec![left_variable, right_variable];
                     let argument_spans = vec![left_span, right_span];
 
-                    if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
-                        if function.is_builtin {
-                            let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
-                            self.instructions.push(instruction(variable, argument_variables[0], argument_variables[1]));
-                            variable
+                    if let Some((function_variable, output_variable, is_builtin)) = self.get_function_call_variables(expression_span, &*name, &mut argument_variables, argument_spans) {
+                        if is_builtin {
+                            self.instructions.push(instruction(output_variable, argument_variables[0], argument_variables[1]));
                         } else {
-                            let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
-                            self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
-                            variable
+                            self.instructions.push(Instruction::Call(output_variable, function_variable, (*argument_variables).into()));
                         }
+                        output_variable
                     } else {
                         self.generate_error()
                     }
@@ -505,16 +500,13 @@ impl<'source> IrGenerator<'source> {
                     let mut argument_variables = vec![right_variable];
                     let argument_spans = vec![right_span];
 
-                    if let Some(function) = self.autocast_call_arguments(expression_span, &*name, &mut argument_variables, argument_spans) {
-                        if function.is_builtin {
-                            let variable = self.new_variable(Variable { typ: function.return_type, is_temporary: true });
-                            self.instructions.push(instruction(variable, argument_variables[0]));
-                            variable
+                    if let Some((function_variable, output_variable, is_builtin)) = self.get_function_call_variables(expression_span, &*name, &mut argument_variables, argument_spans) {
+                        if is_builtin {
+                            self.instructions.push(instruction(output_variable, argument_variables[0]));
                         } else {
-                            let variable = self.new_variable(Variable { typ: function.return_type.clone(), is_temporary: true });
-                            self.instructions.push(Instruction::Call(variable, function, (*argument_variables).into()));
-                            variable
+                            self.instructions.push(Instruction::Call(output_variable, function_variable, (*argument_variables).into()));
                         }
+                        output_variable
                     } else {
                         self.generate_error()
                     }
@@ -599,12 +591,13 @@ impl<'source> IrGenerator<'source> {
                 if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
                     self.generate_error()
                 } else {
-                    if let Some(function) = self.compiler.lookup_function(expression_span, name, &argument_types) {
-                        let argument_type_ids = function.arguments.clone();
-                        let return_type_id = function.return_type;
-                        let variable = self.new_variable(Variable { typ: self.compiler.type_function(argument_type_ids, return_type_id), is_temporary: true });
-                        self.instructions.push(Instruction::Function(variable, function));
-                        variable
+                    if let Some((function_variable, _, _, is_builtin)) = self.lookup_function(expression_span, name, &argument_types) {
+                        if is_builtin {
+                            self.compiler.report_error(Error::ReferenceToBuiltinFunction(expression_span));
+                            self.generate_error()
+                        } else {
+                            function_variable
+                        }
                     } else {
                         self.generate_error()
                     }
@@ -667,23 +660,23 @@ impl<'source> IrGenerator<'source> {
         let span = self.compiler.expression_span(expression);
         match *expression {
             Expression::Variable(name) => {
-                if let Some(&variable_id) = self.locals.get(name) {
+                if let Some(&variable_id) = self.locals.get(&Name::Simple(name)) {
                     self.try_cast_pointer(variable_id, pointer_type, span)
                 } else {
                     self.compiler.report_error(Error::UndefinedVariable(name));
                     self.generate_error()
                 }
             },
-            Expression::VariableDefinition(name, ref type_expression) => {
-                if self.locals_stack.contains(&name) {
-                    self.compiler.report_error(Error::ShadowedName(name));
+            Expression::VariableDefinition(ref name, ref type_expression) => {
+                if self.locals_stack.contains(name) {
+                    self.compiler.report_error(Error::ShadowedName(span, name.clone()));
                     self.generate_error()
                 } else {
                     let typ = self.compiler.resolve_type(type_expression);
                     let variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ), is_temporary: false });
                     self.instructions.push(Instruction::Allocate(variable_id));
-                    self.locals_stack.push(name);
-                    self.locals.insert(name, variable_id);
+                    self.locals_stack.push(name.clone());
+                    self.locals.insert(name.clone(), variable_id);
 
                     self.try_cast_pointer(variable_id, pointer_type, span)
                 }
@@ -800,24 +793,53 @@ impl<'source> IrGenerator<'source> {
         }
     }
 
-    fn autocast_call_arguments(&mut self, span: &'source str, name: &FunctionName<'source>, argument_variables: &mut [VariableId], argument_spans: Vec<&'source str>) -> Option<&'source Function> {
+    fn lookup_function(&mut self, span: &'source str, name: &FunctionName<'source>, argument_types: &[TypeId]) -> Option<(VariableId, &'source [TypeId], TypeId, bool)> {
+        let boxed_name = name.iter().cloned().collect();
+        if let Some(&variable) = self.locals.get(&Name::Procedure(boxed_name)) {
+            let typ = self.get_lvalue_type(variable);
+            let new_variable = self.new_variable(Variable {
+                typ,
+                is_temporary: true,
+            });
+            self.instructions.push(Instruction::Load(new_variable, variable));
+            match *self.compiler.get_type_info(typ) {
+                Type::Function { ref argument_types, return_type } => Some((new_variable, &**argument_types, return_type, false)),
+                _ => {
+                    self.compiler.report_error(Error::CallOfNonFunction(span, typ));
+                    None
+                },
+            }
+        } else if let Some(function) = self.compiler.lookup_function(span, name, argument_types) {
+            let typ = self.compiler.type_function(function.arguments.clone(), function.return_type);
+            if function.is_builtin {
+                Some((!0, &*function.arguments, function.return_type, true))
+            } else {
+                let variable = self.new_variable(Variable { typ, is_temporary: true });
+                self.instructions.push(Instruction::Function(variable, function));
+                Some((variable, &*function.arguments, function.return_type, false))
+            }
+        } else {
+            None
+        }
+    }
+
+    fn get_function_call_variables(&mut self, span: &'source str, name: &FunctionName<'source>, argument_variables: &mut [VariableId], argument_spans: Vec<&'source str>) -> Option<(VariableId, VariableId, bool)> {
         let argument_types: Box<[_]> = argument_variables.iter().map(|&x| self.variables[x].typ).collect();
 
         if argument_types.iter().any(|&x| self.compiler.is_error_type(x)) {
             return None
         }
 
-        if let Some(function) = self.compiler.lookup_function(span, name, &argument_types) {
-            debug_assert_eq!(function.arguments.len(), argument_variables.len());
+        self.lookup_function(span, name, &argument_types).map(|(function_variable, arguments, return_type, is_builtin)| {
+            debug_assert_eq!(arguments.len(), argument_variables.len());
 
-            for (i, (&expected_type, found_variable)) in function.arguments.iter().zip(argument_variables.iter_mut()).enumerate() {
+            for (i, (&expected_type, found_variable)) in arguments.iter().zip(argument_variables.iter_mut()).enumerate() {
                 *found_variable = self.autocast_variable_to_type(*found_variable, expected_type, argument_spans[i]);
             }
 
-            Some(function)
-        } else {
-            None
-        }
+            let variable = self.new_variable(Variable { typ: return_type.clone(), is_temporary: true });
+            (function_variable, variable, is_builtin)
+        })
     }
 }
 
@@ -844,8 +866,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                 Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
                 Instruction::String(destination, ref bytes) => write!(f, "%{} = {:?}", destination, String::from_utf8_lossy(bytes))?,
 
-                Instruction::Call(destination, function, ref arguments) => {
-                    write!(f, "%{} = call ${}", destination, FunctionPrinter(self.compiler, function))?;
+                Instruction::Call(destination, variable, ref arguments) => {
+                    write!(f, "%{} = call %{}", destination, variable)?;
                     for argument in arguments.iter() {
                         write!(f, ", {}", argument)?;
                     }
