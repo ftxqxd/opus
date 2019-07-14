@@ -8,7 +8,8 @@ use typed_arena::Arena;
 use crate::parse::{Parser, Definition};
 use crate::generate_ir::IrGenerator;
 use crate::compile::{self, Compiler};
-use crate::backend::c;
+use crate::backend::c::CBackend;
+use crate::backend::Backend;
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -173,7 +174,9 @@ fn compile_source<'source, W: Write>(compiler: &'source mut Compiler<'source>, d
     }
 
     let mut translate = true;
-    c::initialize(compiler, output).unwrap();
+    let mut backend = CBackend::new(compiler, output);
+
+    backend.initialize().unwrap();
     for definition in definitions {
         if let Definition::Function(ref sig, ref block) = **definition {
             let span = compiler.definition_spans[&(&**definition as *const _)];
@@ -188,7 +191,7 @@ fn compile_source<'source, W: Write>(compiler: &'source mut Compiler<'source>, d
             }
 
             if translate {
-                c::translate_ir_to_c(&ir_generator, output).unwrap();
+                backend.translate_ir(&ir_generator).unwrap();
             }
         }
     }

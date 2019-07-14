@@ -1,5 +1,6 @@
 extern crate typed_arena;
 extern crate argparse;
+extern crate llvm_sys;
 
 mod parse;
 mod generate_ir;
