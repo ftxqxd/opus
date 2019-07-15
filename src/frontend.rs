@@ -1,14 +1,14 @@
-use std::io::{Read, Write};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{self, Command, Stdio};
+use std::process;
 use std::collections::{HashSet, VecDeque};
 use argparse::{ArgumentParser, Store, StoreTrue};
 use typed_arena::Arena;
 use crate::parse::{Parser, Definition};
 use crate::generate_ir::IrGenerator;
 use crate::compile::{self, Compiler};
-use crate::backend::c::CBackend;
+//use crate::backend::c::CBackend;
+use crate::backend::llvm::LlvmBackend;
 use crate::backend::Backend;
 
 #[derive(Debug, Clone)]
@@ -41,34 +41,16 @@ pub fn main() {
         ap.parse_args_or_exit();
     }
 
-    let s;
     let output_filename = if let Some(ref output_path) = &options.output_path {
-        &*output_path
+        (*output_path).clone().into()
     } else {
-        s = generate_output_path(&options.filename, options.no_link);
-        &*s
+        generate_output_path(&options.filename, options.no_link)
     };
-    let mut command = Command::new("cc");
-
-    command
-        .arg("-x").arg("c")
-        .arg("-")
-        .arg("-o").arg(output_filename);
-    if options.no_link {
-        command.arg("-c");
-    }
-
-    let mut compiler_process = command
-        .stdin(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn cc process");
-
-    let mut stdin = compiler_process.stdin.as_mut().expect("failed to open cc stdin");
 
     let mut type_arena = typed_arena::Arena::new();
+    let mut function_arena = typed_arena::Arena::new();
 
-    let mut compiler = Compiler::new(options, &mut type_arena);
+    let mut compiler = Compiler::new(options, &mut type_arena, &mut function_arena);
 
     //
     // This part of the code deals largely with imports.
@@ -129,23 +111,7 @@ pub fn main() {
 
     // Do the compile!!!
 
-    compile_source(&mut compiler, &definitions, &mut stdin);
-
-    let result = compiler_process.wait();
-    let stderr = compiler_process.stderr.as_mut().expect("failed to open cc stderr");
-    let mut err = String::new();
-    stderr.read_to_string(&mut err).unwrap();
-
-    if !result.unwrap().success() {
-        eprintln!("internal compiler error: cc exited with non-zero status");
-        eprint!("{}", err);
-        process::exit(1)
-    }
-
-    if err.len() != 0 {
-        eprintln!("cc emitted warnings:");
-        eprint!("{}", err);
-    }
+    compile_source(&mut compiler, &definitions, &*output_filename);
 }
 
 fn get_definitions<'source>(compiler: &mut Compiler<'source>, source: &'source str) -> Vec<Box<Definition<'source>>> {
@@ -168,15 +134,15 @@ fn get_definitions<'source>(compiler: &mut Compiler<'source>, source: &'source s
     definitions
 }
 
-fn compile_source<'source, W: Write>(compiler: &'source mut Compiler<'source>, definitions: &'source [&'source Definition], output: &mut W) {
+fn compile_source<'source>(compiler: &'source mut Compiler<'source>, definitions: &'source [&'source Definition], output_filename: &str) {
     for definition in definitions {
         compiler.finalize_definition(definition);
     }
 
     let mut translate = true;
-    let mut backend = CBackend::new(compiler, output);
+    let mut backend = LlvmBackend::new(compiler);
 
-    backend.initialize().unwrap();
+    backend.initialize();
     for definition in definitions {
         if let Definition::Function(ref sig, ref block) = **definition {
             let span = compiler.definition_spans[&(&**definition as *const _)];
@@ -191,7 +157,7 @@ fn compile_source<'source, W: Write>(compiler: &'source mut Compiler<'source>, d
             }
 
             if translate {
-                backend.translate_ir(&ir_generator).unwrap();
+                backend.translate_ir(&ir_generator);
             }
         }
     }
@@ -199,6 +165,8 @@ fn compile_source<'source, W: Write>(compiler: &'source mut Compiler<'source>, d
     if !translate {
         process::exit(1);
     }
+
+    backend.output(output_filename).unwrap();
 }
 
 fn generate_output_path(input_filename: &str, no_link: bool) -> Box<str> {

@@ -7,8 +7,10 @@ use crate::parse::{self, FunctionSignature, FunctionName, Definition, Expression
 use crate::frontend::Options;
 
 pub struct Compiler<'source> {
-    pub name_resolution_map: HashMap<Box<FunctionName<'source>>, Vec<Function>>,
-    pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, Function>,
+    pub name_resolution_map: HashMap<Box<FunctionName<'source>>, Vec<FunctionId>>,
+    pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, FunctionId>,
+    function_arena: &'source Arena<Function>,
+
     pub has_errors: Cell<bool>,
 
     pub expression_spans: HashMap<*const Expression<'source>, &'source str>,
@@ -59,6 +61,20 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CastType {
+    /// A 'cast' between a type and itself.
+    None,
+    /// A cast between two pointers that point to different things.
+    Pointer,
+    /// A cast between two pointers of different `PointerType`.
+    PointerType,
+    /// A cast between two integer types.
+    Integer,
+    /// Any internal cast that should not actually appear in the IR.
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PointerType {
     Reference,
     Mutable,
@@ -66,13 +82,14 @@ pub enum PointerType {
     ArrayMutable,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Function {
     pub name: Box<[Option<Box<str>>]>,
     pub arguments: Box<[TypeId]>,
     pub return_type: TypeId,
     pub is_extern: bool,
     pub is_builtin: bool,
+    pub id: FunctionId,
 }
 
 /// A function name together with its argument types.
@@ -102,7 +119,7 @@ pub enum Error<'source> {
     ImmutableLvalue(&'source str),
     ArrayPointerToNonArray(&'source str),
     InvalidCast { span: &'source str, from: TypeId, to: TypeId },
-    InvalidExternFunctionName(&'source str, Function),
+    InvalidExternFunctionName(&'source str, FunctionId),
     UndefinedType(&'source str),
     FieldAccessOnNonRecord(&'source str, TypeId),
     FieldDoesNotExist(&'source str, TypeId, &'source str),
@@ -126,6 +143,15 @@ impl Type {
 /// can have multiple corresponding `TypeId`s.
 #[derive(Copy, Clone, Debug)]
 pub struct TypeId(*mut Type);
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct FunctionId(*mut Function);
+
+impl FunctionId {
+    fn null() -> Self {
+        FunctionId(std::ptr::null_mut())
+    }
+}
 
 pub struct TypePrinter<'source>(pub &'source Compiler<'source>, pub TypeId);
 
@@ -190,17 +216,19 @@ impl<'source> fmt::Display for TypePrinter<'source> {
     }
 }
 
-pub struct FunctionPrinter<'source>(pub &'source Compiler<'source>, pub &'source Function);
+pub struct FunctionPrinter<'source>(pub &'source Compiler<'source>, pub FunctionId);
 
 impl<'source> fmt::Display for FunctionPrinter<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        let function = self.0.get_function_info(self.1);
+
         write!(formatter, "(")?;
 
         let mut i = 0;
 
         let mut written_anything = false;
 
-        for part in self.1.name.iter() {
+        for part in function.name.iter() {
             if written_anything {
                 write!(formatter, " ")?;
             }
@@ -208,7 +236,7 @@ impl<'source> fmt::Display for FunctionPrinter<'source> {
             match *part {
                 Some(ref x) => write!(formatter, "{}", x)?,
                 None => {
-                    write!(formatter, ":{}", TypePrinter(self.0, self.1.arguments[i]))?;
+                    write!(formatter, ":{}", TypePrinter(self.0, function.arguments[i]))?;
                     i += 1;
                 },
             }
@@ -216,7 +244,7 @@ impl<'source> fmt::Display for FunctionPrinter<'source> {
             written_anything = true;
         }
 
-        write!(formatter, "): {}", TypePrinter(self.0, self.1.return_type))
+        write!(formatter, "): {}", TypePrinter(self.0, function.return_type))
     }
 }
 
@@ -270,7 +298,7 @@ pub enum PrimitiveType {
 }
 
 impl<'source> Compiler<'source> {
-    pub fn new(options: Options, type_arena: &'source mut Arena<Type>) -> Self {
+    pub fn new(options: Options, type_arena: &'source mut Arena<Type>, function_arena: &'source mut Arena<Function>) -> Self {
         const SIZE: usize = PrimitiveType::NumberOfPrimitives as usize;
         let mut primitive_types = Box::new([TypeId(0 as *mut _); SIZE]);
         for i in 0..SIZE {
@@ -297,6 +325,7 @@ impl<'source> Compiler<'source> {
         let mut this = Self {
             name_resolution_map: HashMap::with_capacity(128),
             signature_resolution_map: HashMap::with_capacity(32),
+            function_arena,
             has_errors: Cell::new(false),
             expression_spans: HashMap::with_capacity(1024),
             type_spans: HashMap::with_capacity(64),
@@ -339,8 +368,9 @@ impl<'source> Compiler<'source> {
                     return_type: typ,
                     is_extern: false,
                     is_builtin: true,
+                    id: FunctionId::null(),
                 };
-                overloads.push(function);
+                overloads.push(this.new_function_id(function));
             }
             this.name_resolution_map.insert(name, overloads);
         }
@@ -375,8 +405,9 @@ impl<'source> Compiler<'source> {
                     return_type: this.type_bool(),
                     is_extern: false,
                     is_builtin: true,
+                    id: FunctionId::null(),
                 };
-                overloads.push(function);
+                overloads.push(this.new_function_id(function));
             }
             this.name_resolution_map.insert(name, overloads);
         }
@@ -396,17 +427,24 @@ impl<'source> Compiler<'source> {
                 return_type: this.type_bool(),
                 is_extern: false,
                 is_builtin: true,
+                id: FunctionId::null(),
             };
-            overloads.push(function);
+            overloads.push(this.new_function_id(function));
             this.name_resolution_map.insert(name, overloads);
         }
 
         this
     }
 
+    pub fn new_function_id(&self, function: Function) -> FunctionId {
+        let mut ptr = self.function_arena.alloc(function);
+        let id = FunctionId(ptr);
+        ptr.id = id;
+        id
+    }
+
     pub fn new_type_id(&self, typ: Type) -> TypeId {
-        let type_id = TypeId(self.type_arena.alloc(typ.clone()));
-        type_id
+        TypeId(self.type_arena.alloc(typ))
     }
 
     pub fn get_type_info(&self, type_id: TypeId) -> &Type {
@@ -415,6 +453,13 @@ impl<'source> Compiler<'source> {
         // stays around while the `Compiler` still exists.
         unsafe {
             &*type_id.0
+        }
+    }
+
+    pub fn get_function_info(&self, function_id: FunctionId) -> &Function {
+        // See above.
+        unsafe {
+            &*function_id.0
         }
     }
 
@@ -462,9 +507,26 @@ impl<'source> Compiler<'source> {
         self.new_type_id(Type::Function { argument_types, return_type })
     }
 
-    pub fn can_autocast(&self, from: TypeId, to: TypeId) -> bool {
+    pub fn int_type_width(&self, typ: TypeId) -> i32 {
+        match *self.get_type_info(typ) {
+            Type::Integer8 | Type::Natural8 => 8,
+            Type::Integer16 | Type::Natural16 => 16,
+            Type::Integer32 | Type::Natural32 => 32,
+            Type::Integer64 | Type::Natural64 => 64,
+            _ => unreachable!(),
+        }
+    }
+
+    pub fn type_is_signed(&self, typ: TypeId) -> bool {
+        match *self.get_type_info(typ) {
+            Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 => true,
+            _ => false,
+        }
+    }
+
+    pub fn can_autocast(&self, from: TypeId, to: TypeId) -> Option<CastType> {
         if self.types_match(from, to) {
-            return true
+            return Some(CastType::None)
         }
 
         let type1 = self.get_type_info(from);
@@ -473,16 +535,16 @@ impl<'source> Compiler<'source> {
         match (type1, type2) {
             // errors
             (&Type::Error, _)
-            | (_, &Type::Error) => true,
+            | (_, &Type::Error) => Some(CastType::Error),
             // Used for function overload resolution
-            (&Type::GenericInteger, _) if type2.is_integral() => true,
+            (&Type::GenericInteger, _) if type2.is_integral() => Some(CastType::Error),
             // Used for `proc` expression resolution
-            (&Type::Generic, _) => true,
+            (&Type::Generic, _) => Some(CastType::Error),
             // mut -> ref, muts -> refs
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
                 if self.can_autocast_pointer_type(pointer_type1, pointer_type2) && self.types_match(typ1, typ2)
-              => true,
-            _ => false,
+              => Some(CastType::PointerType),
+            _ => None,
         }
     }
 
@@ -496,16 +558,16 @@ impl<'source> Compiler<'source> {
         }
     }
 
-    pub fn can_cast(&self, from: TypeId, to: TypeId) -> bool {
-        if self.can_autocast(from, to) {
-            true
+    pub fn can_cast(&self, from: TypeId, to: TypeId) -> Option<CastType> {
+        if let Some(cast_type) = self.can_autocast(from, to) {
+            Some(cast_type)
         } else {
             let type1 = self.get_type_info(from);
             let type2 = self.get_type_info(to);
             match (type1, type2) {
-                (_, _) if type1.is_integral() && type2.is_integral() => true,
-                (&Type::Pointer(type1, _), &Type::Pointer(type2, _)) if type1 == type2 => true,
-                _ => false,
+                (_, _) if type1.is_integral() && type2.is_integral() => Some(CastType::Integer),
+                (&Type::Pointer(type1, _), &Type::Pointer(type2, _)) if type1 == type2 => Some(CastType::Pointer),
+                _ => None,
             }
         }
     }
@@ -686,7 +748,7 @@ impl<'source> Compiler<'source> {
                 eprintln!("invalid cast: {} to {}", TypePrinter(self, from), TypePrinter(self, to));
                 print_span(&self, span);
             },
-            InvalidExternFunctionName(span, ref function) => {
+            InvalidExternFunctionName(span, function) => {
                 eprintln!("invalid extern function signature: {}", FunctionPrinter(self, function));
                 print_span(&self, span);
             },
@@ -775,7 +837,7 @@ impl<'source> Compiler<'source> {
                     false
                 };
 
-                let function = Function { name, arguments, return_type, is_extern, is_builtin: false };
+                let function = Function { name, arguments, return_type, is_extern, is_builtin: false, id: FunctionId::null() };
 
                 if is_extern
                 && (signature.name.len() == 0
@@ -784,13 +846,15 @@ impl<'source> Compiler<'source> {
                     || signature.name[0].as_ref().unwrap().chars().next() != Some('\''))
                 {
                     let span = self.definition_span(definition);
-                    self.report_error(Error::InvalidExternFunctionName(span, function.clone()));
+                    self.report_error(Error::InvalidExternFunctionName(span, function.id));
                 }
 
+                let function_id = self.new_function_id(function);
+
                 self.name_resolution_map.entry(signature.name.clone())
-                    .and_modify(|v| v.push(function.clone()))
-                    .or_insert_with(|| vec![function.clone()]);
-                self.signature_resolution_map.insert(signature, function);
+                    .and_modify(|v| v.push(function_id))
+                    .or_insert_with(|| vec![function_id]);
+                self.signature_resolution_map.insert(signature, function_id);
             },
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
@@ -831,17 +895,18 @@ impl<'source> Compiler<'source> {
     ///    should be able to be ignored as far as the matching strategy is concerned.
     ///
     /// This function employs the obvious algorithm that satisfies the above properties.
-    pub fn lookup_function(&self, span: &'source str, name: &FunctionName<'source>, argument_types: &[TypeId]) -> Option<&Function> {
+    pub fn lookup_function(&self, span: &'source str, name: &FunctionName<'source>, argument_types: &[TypeId]) -> Option<FunctionId> {
         // FIXME(cleanup): this code isn't ideal and could probably be simplified & optimized
         let function_identifier = FunctionIdentifier {
             name: name.iter().map(|x| x.map(|y| y.into())).collect(),
             arguments: argument_types.into(),
         };
 
-        if let Some(functions) = self.name_resolution_map.get::<Box<_>>(&name.into()) {
-            let candidates: Box<[_]> = functions.iter()
+        if let Some(function_ids) = self.name_resolution_map.get::<Box<_>>(&name.into()) {
+            let candidates: Box<[_]> = function_ids.iter()
+                .map(|&id| self.get_function_info(id))
                 // Can we autocast our parameters to match this function's types?
-                .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, &y)| self.can_autocast(x, y))).collect();
+                .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, &y)| self.can_autocast(x, y).is_some())).collect();
 
             if candidates.len() == 0 {
                 self.report_error(Error::NoOverloadForFunction(span, function_identifier));
@@ -875,7 +940,7 @@ impl<'source> Compiler<'source> {
                         .all(|(_, (&x, &y))| self.types_match_default_generic(x, y)))
             {
                 // We have a match!
-                return Some(function)
+                return Some(function.id)
             }
 
             self.report_error(Error::AmbiguousOverload(span, function_identifier));
