@@ -59,10 +59,7 @@ pub enum Type {
     Bool,
     Null,
     Pointer(PointerType, TypeId),
-    Record {
-        name: Box<str>,
-        fields: Box<[(Box<str>, TypeId)]>,
-    },
+    Record(Box<[(Box<str>, TypeId)]>),
     Function {
         argument_types: Box<[TypeId]>,
         return_type: TypeId,
@@ -224,8 +221,12 @@ impl<'source> fmt::Display for TypePrinter<'source> {
                 write!(formatter, "muts {}", TypePrinter(self.0, subtype))?;
                 ""
             },
-            Type::Record { ref name, .. } => {
-                write!(formatter, "{}", name)?;
+            Type::Record(ref fields) => {
+                write!(formatter, "record {{")?;
+                for &(ref name, type_id) in fields.iter() {
+                    write!(formatter, " {}: {}", name, TypePrinter(self.0, type_id))?;
+                }
+                write!(formatter, " }}")?;
                 ""
             },
             Type::Function { ref argument_types, return_type } => {
@@ -629,11 +630,7 @@ impl<'source> Compiler<'source> {
             (&Type::Bool, &Type::Bool) => true,
             (&Type::Null, &Type::Null) => true,
             (&Type::Pointer(type1, subtype1), &Type::Pointer(type2, subtype2)) => type1 == type2 && self.types_match(subtype1, subtype2),
-            (&Type::Record { name: ref name1, fields: ref fields1 }, &Type::Record { name: ref name2, fields: ref fields2 }) => {
-                if name1 != name2 {
-                    return false
-                }
-
+            (&Type::Record(ref fields1), &Type::Record(ref fields2)) => {
                 if fields1.len() != fields2.len() {
                     return false
                 }
@@ -855,12 +852,20 @@ impl<'source> Compiler<'source> {
                 };
                 self.new_type_id(type_info)
             },
+            parse::Type::Record(ref fields) => {
+                let mut resolved_fields = vec![];
+                for &(field_name, ref type_expression) in fields.iter() {
+                    resolved_fields.push((field_name.into(), self.resolve_type(type_expression)));
+                }
+                let typ = Type::Record(resolved_fields.into());
+                self.new_type_id(typ)
+            },
         }
     }
 
     pub fn preload_definition(&mut self, definition: &'source Definition<'source>) -> Option<&'source [u8]> {
         match *definition {
-            Definition::Type(name, ..) | Definition::Record(name, ..) => {
+            Definition::Type(name, ..) => {
                 // Make a new placeholder TypeId to be filled in with real type information later
                 let type_id = TypeId(self.type_arena.alloc(Type::Error));
                 self.type_resolution_map.insert(name, type_id);
@@ -938,17 +943,6 @@ impl<'source> Compiler<'source> {
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
                 let typ = self.get_type_info(type_id).clone();
-                let TypeId(pointer) = self.type_resolution_map[name];
-                unsafe {
-                    *pointer = typ;
-                }
-            },
-            Definition::Record(name, ref fields) => {
-                let mut resolved_fields = vec![];
-                for &(field_name, ref type_expression) in fields.iter() {
-                    resolved_fields.push((field_name.into(), self.resolve_type(type_expression)));
-                }
-                let typ = Type::Record { name: name.into(), fields: resolved_fields.into() };
                 let TypeId(pointer) = self.type_resolution_map[name];
                 unsafe {
                     *pointer = typ;

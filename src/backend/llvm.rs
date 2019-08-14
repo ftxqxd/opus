@@ -62,7 +62,7 @@ impl<'source> LlvmBackend<'source> {
                 Type::Null => LLVMInt1TypeInContext(self.context),
                 Type::Bool => LLVMInt1TypeInContext(self.context),
                 Type::Pointer(_, subtype) => LLVMPointerType(self.translate_type(subtype), 0),
-                Type::Record { ref fields, .. } => {
+                Type::Record(ref fields) => {
                     let mut field_typerefs = vec![];
                     for &(_, type_id) in fields.iter() {
                         field_typerefs.push(self.translate_type(type_id));
@@ -166,8 +166,13 @@ impl<'source> LlvmBackend<'source> {
                 };
                 format!("{}To{}", prefix, self.mangle_type_name(subtype))
             },
-            Type::Record { ref name, .. } => {
-                format!("Record{}", name)
+            Type::Record(ref fields) => {
+                let mut string: String = "Record".into();
+                for &(ref name, type_id) in fields.iter() {
+                    string.push_str(&format!("Field{}Type{}", name, self.mangle_type_name(type_id)));
+                }
+                string.push_str("End");
+                string
             },
             Type::Function { ref argument_types, return_type } => {
                 let mut output = String::new();
@@ -420,7 +425,7 @@ impl<'source> FunctionTranslator<'source> {
                     // %dest = getelementptr <ty>, <ty>* source, i32 <idx>
                     let record_type = self.ir.compiler.get_type_info(self.ir.get_lvalue_type(source));
                     let index = match record_type {
-                        Type::Record { ref fields, .. } => {
+                        Type::Record(ref fields) => {
                             fields.iter().position(|&(ref field_name2, _)| **field_name2 == *field_name).unwrap()
                         },
                         ref t => unreachable!("{:?}", t),

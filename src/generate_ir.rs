@@ -809,7 +809,7 @@ impl<'source> IrGenerator<'source> {
         let typ = self.get_lvalue_type(record_variable);
         let type_info = self.compiler.get_type_info(typ);
         match *type_info {
-            Type::Record { ref fields, .. } => {
+            Type::Record(ref fields) => {
                 fields.iter().find(|&&(ref field_name2, _)| {
                     **field_name2 == *field_name
                 }).map(|&(_, field_type)| field_type)
@@ -830,7 +830,7 @@ impl<'source> IrGenerator<'source> {
         let typ = self.get_lvalue_type(record_variable);
         let type_info = self.compiler.get_type_info(typ);
         match *type_info {
-            Type::Record { ref fields, .. } => {
+            Type::Record(ref fields) => {
                 let field_type_option = fields.iter().find(|&&(ref field_name2, _)| {
                     **field_name2 == *field_name
                 }).map(|&(_, field_type)| field_type);

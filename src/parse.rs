@@ -271,6 +271,7 @@ pub enum Type<'source> {
     ArrayReference(Box<Type<'source>>),
     MutableArrayReference(Box<Type<'source>>),
     Proc(Box<[Box<Type<'source>>]>, Box<Type<'source>>),
+    Record(Box<[(&'source str, Box<Type<'source>>)]>),
 }
 
 pub type Block<'source> = [Box<Statement<'source>>];
@@ -280,7 +281,6 @@ pub enum Definition<'source> {
     Function(FunctionSignature<'source>, Box<Block<'source>>),
     Extern(FunctionSignature<'source>),
     Type(&'source str, Box<Type<'source>>),
-    Record(&'source str, Box<[(&'source str, Box<Type<'source>>)]>),
     Variable(Name<'source>, Box<Type<'source>>, Option<Box<Expression<'source>>>),
     Import(Box<[u8]>),
 }
@@ -890,6 +890,25 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let return_type = self.parse_type()?;
                 Type::Proc(argument_types.into(), return_type)
             },
+            Token::Record => {
+                self.expect(&Token::LeftBrace)?;
+                let mut fields = vec![];
+                self.ignore_dents += 1;
+                loop {
+                    let token = self.peek_token()?;
+                    if token == Token::RightBrace {
+                        let _ = self.parse_token();
+                        break
+                    }
+                    let field_name = self.parse_lowercase_identifier()?;
+                    self.expect(&Token::Colon)?;
+                    let field_type = self.parse_type()?;
+                    fields.push((field_name, field_type));
+                }
+                self.ignore_dents -= 1;
+
+                Type::Record(fields.into())
+            },
             t => {
                 let span = &self.source[low..self.position];
                 return Err(Error::UnexpectedToken(span, t))
@@ -1241,26 +1260,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Type(name, typ)
-            },
-            Token::Record => {
-                let _ = self.parse_token();
-                let name = self.parse_lowercase_identifier()?;
-                self.expect(&Token::Indent)?;
-                let mut fields = vec![];
-                loop {
-                    let token = self.peek_token()?;
-                    if token == Token::Dedent {
-                        let _ = self.parse_token();
-                        break
-                    }
-                    let field_name = self.parse_lowercase_identifier()?;
-                    self.expect(&Token::Colon)?;
-                    let field_type = self.parse_type()?;
-                    fields.push((field_name, field_type));
-                }
-                span = &self.source[low..self.position];
-
-                Definition::Record(name, fields.into())
             },
             Token::Import => {
                 let _ = self.parse_token();
