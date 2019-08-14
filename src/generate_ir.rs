@@ -166,11 +166,23 @@ impl<'source> IrGenerator<'source> {
         debug_assert_eq!(self.break_instructions_to_insert.len(), 0);
     }
 
+    fn begin_scope(&mut self) -> usize {
+        self.locals_stack.len()
+    }
+
+    fn end_scope(&mut self, locals_stack_length: usize) {
+        while self.locals_stack.len() > locals_stack_length {
+            let name = self.locals_stack.pop().unwrap();
+            self.locals.remove(&name);
+        }
+    }
+
     /// Generate IR for a block of statements.  Return `true` if the block is guaranteed to
     /// diverge.
     fn generate_ir_from_block(&mut self, block: &'source Block<'source>) -> bool {
-        let locals_stack_length = self.locals_stack.len();
         let mut diverges = false;
+
+        let scope = self.begin_scope();
 
         for statement in block {
             if self.generate_ir_from_statement(statement) {
@@ -178,10 +190,7 @@ impl<'source> IrGenerator<'source> {
             }
         }
 
-        while self.locals_stack.len() > locals_stack_length {
-            let name = self.locals_stack.pop().unwrap();
-            self.locals.remove(&name);
-        }
+        self.end_scope(scope);
 
         diverges
     }
@@ -195,8 +204,8 @@ impl<'source> IrGenerator<'source> {
             // don't need to do anything
             variable
         } else if let Some(cast_type) = self.compiler.can_autocast(found_type, expected_type) {
-            if let Type::GenericInteger = *self.compiler.get_type_info(found_type) {
-                // This GenericInteger variable must be the argument of a function call, so we can
+            if let Type::GenericInteger | Type::Generic = *self.compiler.get_type_info(found_type) {
+                // This Generic* variable must be the argument of a function call, so we can
                 // just change its type directly, as it's a temporary so isn't used anywhere else.
                 self.variables[variable].typ = expected_type;
                 variable
@@ -327,6 +336,115 @@ impl<'source> IrGenerator<'source> {
                 self.bbs.push(vec![]);
                 self.bb_index = else_branch;
                 let diverges = self.generate_ir_from_block(else_block) | (is_infinite && new_break_instructions_to_insert.len() == 0);
+                let else_branch_end = self.bb_index;
+
+                let merge = self.bbs.len();
+                self.bbs.push(vec![]);
+                self.bb_index = merge;
+
+                self.bbs[branch].push(Instruction::Branch(condition_variable, then_branch, else_branch));
+                self.bbs[then_branch_end].push(Instruction::Jump(loop_start));
+                self.bbs[else_branch_end].push(Instruction::Jump(merge));
+
+                // Fill in break instructions
+                for (bb_index, instruction_index) in new_break_instructions_to_insert {
+                    self.bbs[bb_index][instruction_index] = Instruction::Jump(merge);
+                }
+
+                return diverges
+            },
+            Statement::For(ref name, ref type_option, ref iteree, ref then_block, ref else_block) => {
+                // We esentially want this:
+                //
+                //     for <name>[: <type>] in <iteree>
+                //         <then>
+                //     else
+                //         <else>
+                //
+                // to be equivalent to this:
+                //
+                //     var iterator := (for <iteree>)
+                //     var <name>[: <type>]
+                //     while (continue mut iterator mut <name>)
+                //         <then>
+                //     else
+                //         <else>
+                //
+                //  but where <name> is only accessible in the scope of the <then> block.
+
+                // Generate the iterator
+                let iteree_variable = self.generate_ir_from_expression(iteree, None);
+                let for_name = vec![Some("for"), None];
+                let mut argument_variables = vec![iteree_variable];
+                let expression_span = self.compiler.expression_span(iteree);
+                let argument_spans = vec![expression_span];
+                let (for_function_variable, return_variable, _) = if let Some(x) = self.get_function_call_variables(expression_span, &*for_name, &mut argument_variables, argument_spans) {
+                    x
+                } else {
+                    (self.generate_error(), self.generate_error(), false)
+                };
+                let iterator_variable_type = self.compiler.type_mut(self.variables[return_variable].typ);
+                let iterator_variable = self.new_variable(Variable { typ: iterator_variable_type, is_temporary: true });
+                self.instructions().push(Instruction::Call(return_variable, for_function_variable, (*argument_variables).into()));
+                self.instructions().push(Instruction::Allocate(iterator_variable));
+                self.instructions().push(Instruction::Store(iterator_variable, return_variable));
+
+                let loop_start = self.bbs.len();
+                self.instructions().push(Instruction::Jump(loop_start));
+                self.bb_index = loop_start;
+                self.bbs.push(vec![]);
+
+                // Define iteration variable
+                let scope = self.begin_scope();
+                let pointer_type = if let Some(type_expression) = type_option.as_ref() {
+                    self.compiler.type_mut(self.compiler.resolve_type(type_expression))
+                } else {
+                    self.compiler.type_primitive(PrimitiveType::Generic)
+                };
+                let iteration_variable = if self.locals_stack.contains(&name) {
+                    self.compiler.report_error(Error::ShadowedName(span, name.clone()));
+                    self.generate_error()
+                } else {
+                    let new_variable_id = self.new_variable(Variable { typ: pointer_type, is_temporary: false });
+                    self.instructions().push(Instruction::Allocate(new_variable_id));
+                    self.locals_stack.push(name.clone());
+                    self.locals.insert(name.clone(), new_variable_id);
+                    new_variable_id
+                };
+
+                // Generate branching condition
+                let continue_name = vec![Some("continue"), None, None];
+                let mut argument_variables = vec![iterator_variable, iteration_variable];
+                let argument_spans = vec![expression_span, expression_span]; // FIXME: spans could be better
+                let (continue_function_variable, condition_variable, _) = if let Some(x) = self.get_function_call_variables(expression_span, &*continue_name, &mut argument_variables, argument_spans) {
+                    x
+                } else {
+                    (self.generate_error(), self.generate_error(), false)
+                };
+                self.instructions().push(Instruction::Call(condition_variable, continue_function_variable, (*argument_variables).into()));
+                let condition_variable = self.autocast_variable_to_type(condition_variable, self.compiler.type_bool(), expression_span);
+
+                let branch = self.bb_index;
+
+                let old_break_instructions_to_insert = mem::replace(&mut self.break_instructions_to_insert, vec![]);
+                let old_innermost_loop_begin = self.innermost_loop_begin;
+                self.innermost_loop_begin = Some(loop_start);
+
+                let then_branch = self.bbs.len();
+                self.bbs.push(vec![]);
+                self.bb_index = then_branch;
+                self.generate_ir_from_block(then_block);
+                let then_branch_end = self.bb_index;
+
+                let new_break_instructions_to_insert = mem::replace(&mut self.break_instructions_to_insert, old_break_instructions_to_insert);
+                self.innermost_loop_begin = old_innermost_loop_begin;
+
+                self.end_scope(scope);
+
+                let else_branch = self.bbs.len();
+                self.bbs.push(vec![]);
+                self.bb_index = else_branch;
+                let diverges = self.generate_ir_from_block(else_block);
                 let else_branch_end = self.bb_index;
 
                 let merge = self.bbs.len();

@@ -39,6 +39,7 @@ pub enum Token<'source> {
     If,
     Else,
     While,
+    For,
     Break,
     Continue,
     Extern,
@@ -52,6 +53,7 @@ pub enum Token<'source> {
     Type,
     Record,
     Is,
+    In,
     And,
     Or,
     Not,
@@ -109,6 +111,7 @@ impl<'source> fmt::Display for Token<'source> {
             If => "if",
             Else => "else",
             While => "while",
+            For => "for",
             Break => "break",
             Continue => "continue",
             Extern => "extern",
@@ -121,6 +124,7 @@ impl<'source> fmt::Display for Token<'source> {
             True => "true",
             Type => "type",
             Is => "is",
+            In => "in",
             And => "and",
             Or => "or",
             Not => "not",
@@ -258,6 +262,7 @@ pub enum Statement<'source> {
     Return(Box<Expression<'source>>),
     If(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
     While(Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
+    For(Name<'source>, Option<Box<Type<'source>>>, Box<Expression<'source>>, Box<Block<'source>>, Box<Block<'source>>),
     Break,
     Continue,
 }
@@ -645,6 +650,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "if" => Ok(Token::If),
                     "else" => Ok(Token::Else),
                     "while" => Ok(Token::While),
+                    "for" => Ok(Token::For),
                     "break" => Ok(Token::Break),
                     "continue" => Ok(Token::Continue),
                     "extern" => Ok(Token::Extern),
@@ -658,6 +664,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "type" => Ok(Token::Type),
                     "record" => Ok(Token::Record),
                     "is" => Ok(Token::Is),
+                    "in" => Ok(Token::In),
                     "and" => Ok(Token::And),
                     "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
@@ -1169,6 +1176,32 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     _ => unreachable!(),
                 })(condition, then, els)
             },
+            Token::For => {
+                let _ = self.parse_token();
+                let name = self.parse_name()?;
+
+                let type_option = match self.peek_token()? {
+                    Token::Colon => {
+                        let _ = self.parse_token();
+                        Some(self.parse_type()?)
+                    },
+                    _ => None,
+                };
+
+                self.expect(&Token::In)?;
+
+                let iteree = self.parse_expression()?;
+                let block = self.parse_block()?;
+
+                let els = if let Ok(Token::Else) = self.peek_token() {
+                    let _ = self.parse_token();
+                    self.parse_block()?
+                } else {
+                    Box::new([])
+                };
+
+                Statement::For(name, type_option, iteree, block, els)
+            },
             Token::Break => {
                 let _ = self.parse_token();
                 Statement::Break
@@ -1337,6 +1370,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let operator = Operator::unary_from_token(t).unwrap();
                 Some(operator.symbol())
+            },
+            Token::For => {
+                let _ = self.parse_token();
+                Some("for")
+            },
+            Token::Continue => {
+                let _ = self.parse_token();
+                Some("continue")
             },
             _ => None,
         })
