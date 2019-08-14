@@ -2,7 +2,7 @@ use std::mem;
 use std::fmt;
 use std::collections::HashMap;
 use crate::parse::{Expression, Statement, FunctionSignature, Block, Operator, FunctionName, Name};
-use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, FunctionId, TypePrinter, FunctionPrinter, CastType};
+use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, FunctionId, GlobalId, TypePrinter, FunctionPrinter, CastType};
 
 #[derive(Debug)]
 pub enum Instruction<'source> {
@@ -31,6 +31,7 @@ pub enum Instruction<'source> {
     GreaterThanEquals(VariableId, VariableId, VariableId),
 
     Function(VariableId, FunctionId),
+    Global(VariableId, GlobalId),
 
     Not(VariableId, VariableId),
     Negate(VariableId, VariableId),
@@ -713,6 +714,12 @@ impl<'source> IrGenerator<'source> {
             Expression::Variable(name) => {
                 if let Some(&variable_id) = self.locals.get(&Name::Simple(name)) {
                     self.try_cast_pointer(variable_id, pointer_type, span)
+                } else if let Some(&global_id) = self.compiler.variable_resolution_map.get(&Name::Simple(name)) {
+                    let (subtype, _) = self.compiler.globals[global_id];
+                    let typ = self.compiler.type_mut(subtype);
+                    let variable_id = self.new_variable(Variable { typ, is_temporary: true });
+                    self.instructions().push(Instruction::Global(variable_id, global_id));
+                    self.try_cast_pointer(variable_id, pointer_type, span)
                 } else {
                     self.compiler.report_error(Error::UndefinedVariable(name));
                     self.generate_error()
@@ -945,6 +952,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     Instruction::GreaterThanEquals(variable1, variable2, variable3) => write!(f, "%{} = greaterthanequals %{}, %{}", variable1, variable2, variable3)?,
 
                     Instruction::Function(variable, function) => write!(f, "%{} = global ${}", variable, FunctionPrinter(self.compiler, function))?,
+                    Instruction::Global(variable, global_id) => write!(f, "%{} = global %{}", variable, global_id)?,
 
                     Instruction::Not(variable1, variable2) => write!(f, "%{} = not %{}", variable1, variable2)?,
                     Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,

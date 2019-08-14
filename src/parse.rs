@@ -281,6 +281,7 @@ pub enum Definition<'source> {
     Extern(FunctionSignature<'source>),
     Type(&'source str, Box<Type<'source>>),
     Record(&'source str, Box<[(&'source str, Box<Type<'source>>)]>),
+    Variable(Name<'source>, Box<Type<'source>>, Option<Box<Expression<'source>>>),
     Import(Box<[u8]>),
 }
 
@@ -1215,6 +1216,22 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Extern(signature)
+            },
+            Token::Var => {
+                let _ = self.parse_token();
+                let variable_name = self.parse_name()?;
+                self.expect(&Token::Colon)?;
+                let type_expression = self.parse_type()?;
+                let value_option = match self.peek_token()? {
+                    Token::ColonEquals => {
+                        let _ = self.parse_token();
+                        Some(self.parse_expression()?)
+                    },
+                    _ => None,
+                };
+                span = &self.source[low..self.position];
+
+                Definition::Variable(variable_name, type_expression, value_option)
             },
             Token::Type => {
                 let _ = self.parse_token();

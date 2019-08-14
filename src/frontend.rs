@@ -139,25 +139,36 @@ fn compile_source<'source>(compiler: &'source mut Compiler<'source>, definitions
         compiler.finalize_definition(definition);
     }
 
-    let mut translate = true;
+    let mut translate = !compiler.has_errors.get();
     let mut backend = LlvmBackend::new(compiler);
 
     backend.initialize();
-    for definition in definitions {
-        if let Definition::Function(ref sig, ref block) = **definition {
-            let span = compiler.definition_spans[&(&**definition as *const _)];
-            let ir_generator = IrGenerator::from_function(&compiler, sig, block, span);
 
-            if compiler.options.debug {
-                eprintln!("{}", ir_generator);
+    if translate {
+        for definition in definitions {
+            if let Definition::Variable(ref name, ..) = **definition {
+                let global_id = compiler.variable_resolution_map[name];
+                let &(typ, ref value) = &compiler.globals[global_id];
+                backend.add_global(global_id, typ, value);
             }
+        }
 
-            if compiler.has_errors.get() {
-                translate = false;
-            }
+        for definition in definitions {
+            if let Definition::Function(ref sig, ref block) = **definition {
+                let span = compiler.definition_spans[&(&**definition as *const _)];
+                let ir_generator = IrGenerator::from_function(&compiler, sig, block, span);
 
-            if translate {
-                backend.translate_ir(&ir_generator);
+                if compiler.options.debug {
+                    eprintln!("{}", ir_generator);
+                }
+
+                if compiler.has_errors.get() {
+                    translate = false;
+                }
+
+                if translate {
+                    backend.translate_ir(&ir_generator);
+                }
             }
         }
     }

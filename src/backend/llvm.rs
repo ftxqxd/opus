@@ -8,7 +8,7 @@ use llvm_sys::target_machine::*;
 use std::io;
 use std::collections::HashMap;
 use std::ffi::CString;
-use crate::compile::{Compiler, TypeId, Type, Function, FunctionId, PointerType, CastType};
+use crate::compile::{Compiler, TypeId, Type, Function, FunctionId, GlobalId, PointerType, CastType, Value};
 use crate::generate_ir::{IrGenerator, Instruction};
 use super::Backend;
 
@@ -19,6 +19,7 @@ pub struct LlvmBackend<'source> {
     builder: LLVMBuilderRef,
 
     function_map: HashMap<FunctionId, LLVMValueRef>,
+    global_map: HashMap<GlobalId, LLVMValueRef>, // FIXME: should this be a Vec instead?
 }
 
 impl<'source> Drop for LlvmBackend<'source> {
@@ -45,6 +46,7 @@ impl<'source> LlvmBackend<'source> {
                 builder,
 
                 function_map: HashMap::new(),
+                global_map: HashMap::new(),
             }
         }
     }
@@ -75,6 +77,27 @@ impl<'source> LlvmBackend<'source> {
                 },
                 Type::Error => unreachable!(),
             }
+        }
+    }
+
+    pub fn add_global(&mut self, global_id: GlobalId, typ: TypeId, value: &Value) {
+        let llvm_type = self.translate_type(typ);
+
+        unsafe {
+            let global_value = LLVMAddGlobal(self.module, llvm_type, b"\0".as_ptr() as *const _);
+
+            let llvm_value = match *value {
+                Value::Integer(i) => {
+                    LLVMConstInt(llvm_type, i as _, self.compiler.type_is_signed(typ) as _)
+                },
+                Value::None => {
+                    LLVMGetUndef(llvm_type)
+                },
+                Value::Error => unreachable!(),
+            };
+
+            LLVMSetInitializer(global_value, llvm_value);
+            self.global_map.insert(global_id, global_value);
         }
     }
 
@@ -471,6 +494,9 @@ impl<'source> FunctionTranslator<'source> {
                 Instruction::Function(destination, function) => {
                     self.variables[destination] = self.backend.function_map[&function];
                 },
+                Instruction::Global(destination, global_id) => {
+                    self.variables[destination] = self.backend.global_map[&global_id];
+                },
 
                 Instruction::Not(destination, variable) => {
                     self.variables[destination] = LLVMBuildNot(self.backend.builder, self.variables[variable], b"\0".as_ptr() as *const _);
@@ -522,7 +548,7 @@ impl<'source> FunctionTranslator<'source> {
                     self.variables[destination] = value;
                 },
 
-                ref i => unimplemented!("{:?}", i),
+                Instruction::Error(..) | Instruction::BreakPlaceholder => unreachable!("{:?}", instruction),
             }
         }
     }

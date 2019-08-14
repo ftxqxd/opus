@@ -11,6 +11,9 @@ pub struct Compiler<'source> {
     pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, FunctionId>,
     function_arena: &'source Arena<Function>,
 
+    pub variable_resolution_map: HashMap<Name<'source>, GlobalId>,
+    pub globals: Vec<(TypeId, Value)>,
+
     pub has_errors: Cell<bool>,
 
     pub expression_spans: HashMap<*const Expression<'source>, &'source str>,
@@ -28,6 +31,13 @@ pub struct Compiler<'source> {
 
     pub type_resolution_map: HashMap<&'source str, TypeId>,
     reverse_type_resolution_map: HashMap<*mut Type, &'source str>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Value {
+    None,
+    Integer(i64),
+    Error,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +120,7 @@ pub enum Error<'source> {
     NoOverloadForFunction(&'source str, FunctionIdentifier),
     AmbiguousOverload(&'source str, FunctionIdentifier),
     UnexpectedType { span: &'source str, expected: TypeId, found: TypeId },
+    InvalidType { span: &'source str, typ: TypeId },
     InvalidOperandType { span: &'source str, typ: TypeId },
     InvalidOperandTypes { span: &'source str, operator: Operator, left: TypeId, right: TypeId },
     FunctionMightNotReturn(&'source str),
@@ -125,6 +136,25 @@ pub enum Error<'source> {
     FieldDoesNotExist(&'source str, TypeId, &'source str),
     CallOfNonFunction(&'source str, TypeId),
     ReferenceToBuiltinFunction(&'source str),
+    InvalidConstantExpression(&'source str),
+}
+
+impl Value {
+    pub fn type_is_valid(&self, typ: &Type) -> bool {
+        match *self {
+            Value::Error => return true,
+            _ => {}
+        }
+
+        match *typ {
+            Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64
+            | Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 => match *self {
+                Value::Integer(..) => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 impl Type {
@@ -146,6 +176,8 @@ pub struct TypeId(*mut Type);
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FunctionId(*mut Function);
+
+pub type GlobalId = usize;
 
 impl FunctionId {
     fn null() -> Self {
@@ -326,6 +358,8 @@ impl<'source> Compiler<'source> {
             name_resolution_map: HashMap::with_capacity(128),
             signature_resolution_map: HashMap::with_capacity(32),
             function_arena,
+            variable_resolution_map: HashMap::with_capacity(8),
+            globals: Vec::with_capacity(8),
             has_errors: Cell::new(false),
             expression_spans: HashMap::with_capacity(1024),
             type_spans: HashMap::with_capacity(64),
@@ -434,6 +468,12 @@ impl<'source> Compiler<'source> {
         }
 
         this
+    }
+
+    fn new_global(&mut self, typ: TypeId, value: Value) -> GlobalId {
+        let id = self.globals.len();
+        self.globals.push((typ, value));
+        id
     }
 
     pub fn new_function_id(&self, function: Function) -> FunctionId {
@@ -712,6 +752,10 @@ impl<'source> Compiler<'source> {
                 eprintln!("invalid type: expected {}, found {}", TypePrinter(self, expected), TypePrinter(self, found));
                 print_span(&self, span);
             },
+            InvalidType { span, typ } => {
+                eprintln!("invalid type: {}", TypePrinter(self, typ));
+                print_span(&self, span);
+            },
             InvalidOperandType { span, typ } => {
                 eprintln!("invalid operand type: {}", TypePrinter(self, typ));
                 print_span(&self, span);
@@ -772,6 +816,10 @@ impl<'source> Compiler<'source> {
                 eprintln!("reference to built-in function");
                 print_span(&self, span);
             },
+            InvalidConstantExpression(span) => {
+                eprintln!("invalid constant expression");
+                print_span(&self, span);
+            },
         }
     }
 
@@ -819,7 +867,7 @@ impl<'source> Compiler<'source> {
                 self.reverse_type_resolution_map.insert(type_id.0, name);
                 None
             },
-            Definition::Function(..) | Definition::Extern(..) => None,
+            Definition::Variable(..) | Definition::Function(..) | Definition::Extern(..) => None,
             Definition::Import(ref path) => Some(&**path),
         }
     }
@@ -855,6 +903,37 @@ impl<'source> Compiler<'source> {
                     .and_modify(|v| v.push(function_id))
                     .or_insert_with(|| vec![function_id]);
                 self.signature_resolution_map.insert(signature, function_id);
+            },
+            Definition::Variable(ref name, ref type_expression, ref value_expression_option) => {
+                let typ = self.resolve_type(type_expression);
+                let mut value = Value::None;
+
+                if let Some(value_expression) = value_expression_option.as_ref() {
+                    let expression_span = self.expression_span(value_expression);
+                    value = match **value_expression {
+                        Expression::Integer(i, _) => Value::Integer(i as i64),
+                        Expression::Negate(ref subexpression) => match **subexpression {
+                            Expression::Integer(i, _) => Value::Integer(-(i as i64)),
+                            _ => {
+                                self.report_error(Error::InvalidConstantExpression(expression_span));
+                                Value::Error
+                            },
+                        },
+                        _ => {
+                            self.report_error(Error::InvalidConstantExpression(expression_span));
+                            Value::Error
+                        },
+                    };
+
+                    if !value.type_is_valid(self.get_type_info(typ)) {
+                        self.report_error(Error::InvalidType { span: expression_span, typ });
+                        value = Value::Error;
+                    }
+                }
+
+                let global_id = self.new_global(typ, value);
+
+                self.variable_resolution_map.insert(name.clone(), global_id);
             },
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
