@@ -526,6 +526,12 @@ impl<'source> FunctionTranslator<'source> {
                                 LLVMBuildZExt(self.backend.builder, self.variables[source], destination_type, b"\0".as_ptr() as *const _)
                             }
                         },
+                        CastType::PointerToInteger => {
+                            LLVMBuildPtrToInt(self.backend.builder, self.variables[source], destination_type, b"\0".as_ptr() as *const _)
+                        },
+                        CastType::IntegerToPointer => {
+                            LLVMBuildIntToPtr(self.backend.builder, self.variables[source], destination_type, b"\0".as_ptr() as *const _)
+                        },
                         CastType::Error => unreachable!(),
                     };
                 },

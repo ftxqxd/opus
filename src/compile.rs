@@ -77,6 +77,10 @@ pub enum CastType {
     PointerType,
     /// A cast between two integer types.
     Integer,
+    /// A cast from any pointer type to an integer type.
+    PointerToInteger,
+    /// A cast from an integer type to any pointer type.
+    IntegerToPointer,
     /// Any internal cast that should not actually appear in the IR.
     Error,
 }
@@ -607,7 +611,9 @@ impl<'source> Compiler<'source> {
             let type2 = self.get_type_info(to);
             match (type1, type2) {
                 (_, _) if type1.is_integral() && type2.is_integral() => Some(CastType::Integer),
-                (&Type::Pointer(type1, _), &Type::Pointer(type2, _)) if type1 == type2 => Some(CastType::Pointer),
+                (&Type::Pointer(pointer_type1, _), &Type::Pointer(pointer_type2, _)) if pointer_type1 == pointer_type2 => Some(CastType::Pointer),
+                (&Type::Pointer(..), _) | (&Type::Function { .. }, _) if type2.is_integral() => Some(CastType::PointerToInteger),
+                (_, &Type::Pointer(..)) | (_, &Type::Function { .. }) if type1.is_integral() => Some(CastType::IntegerToPointer),
                 _ => None,
             }
         }
