@@ -279,6 +279,7 @@ pub enum Type<'source> {
     MutableArrayReference(Box<Type<'source>>),
     Proc(Box<[Box<Type<'source>>]>, Box<Type<'source>>),
     Record(Box<[(&'source str, Box<Type<'source>>)]>),
+    Array(u64, Box<Type<'source>>),
 }
 
 pub type Block<'source> = [Box<Statement<'source>>];
@@ -755,6 +756,16 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         Ok(())
     }
 
+    fn parse_integer(&mut self) -> Result<'source, u64> {
+        match self.parse_token()? {
+            Token::Integer(i, _) => Ok(i),
+            token => {
+                let span = &self.source[self.token_low..self.position];
+                Err(Error::UnexpectedToken(span, token))
+            },
+        }
+    }
+
     fn parse_lowercase_identifier(&mut self) -> Result<'source, &'source str> {
         match self.parse_token()? {
             Token::LowercaseIdentifier(s) => Ok(s),
@@ -919,6 +930,13 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.ignore_dents -= 1;
 
                 Type::Record(fields.into())
+            },
+            Token::LeftBrace => {
+                let value = self.parse_integer()?;
+                self.expect(&Token::RightBrace)?;
+                let subtype = self.parse_type()?;
+
+                Type::Array(value, subtype)
             },
             t => {
                 let span = &self.source[low..self.position];

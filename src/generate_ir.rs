@@ -17,7 +17,8 @@ pub enum Instruction<'source> {
     Load(VariableId, VariableId),
     Store(VariableId, VariableId),
     Field(VariableId, VariableId, &'source str),
-    Index(VariableId, VariableId, VariableId),
+    IndexPointer(VariableId, VariableId, VariableId),
+    IndexArray(VariableId, VariableId, VariableId),
 
     Add(VariableId, VariableId, VariableId),
     Subtract(VariableId, VariableId, VariableId),
@@ -487,6 +488,24 @@ impl<'source> IrGenerator<'source> {
         false
     }
 
+    fn expression_is_lvalue(&self, expression: &'source Expression<'source>) -> bool {
+        match *expression {
+            Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
+            | Expression::Field(..) | Expression::Index(..) | Expression::Record(..) => true,
+            _ => false,
+        }
+    }
+
+    fn dereference_pointer(&mut self, pointer_variable_id: VariableId) -> VariableId {
+        let typ = self.get_lvalue_type(pointer_variable_id);
+        let new_variable_id = self.new_variable(Variable {
+            typ,
+            is_temporary: true,
+        });
+        self.instructions().push(Instruction::Load(new_variable_id, pointer_variable_id));
+        new_variable_id
+    }
+
     /// Generate IR for the given expression and return the index of the variable representing the
     /// result.
     ///
@@ -544,16 +563,11 @@ impl<'source> IrGenerator<'source> {
                 self.instructions().push(Instruction::String(variable_id, bytes.clone()));
                 variable_id
             },
+            // Remember to update expression_is_lvalue when adding more lvalues here!
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
             | Expression::Field(..) | Expression::Index(..) | Expression::Record(..) => {
                 let pointer_variable_id = self.generate_pointer_from_expression(expression, PointerType::Reference);
-                let typ = self.get_lvalue_type(pointer_variable_id);
-                let new_variable_id = self.new_variable(Variable {
-                    typ,
-                    is_temporary: true,
-                });
-                self.instructions().push(Instruction::Load(new_variable_id, pointer_variable_id));
-                new_variable_id
+                self.dereference_pointer(pointer_variable_id)
             },
             Expression::Call(ref name, ref arguments) => {
                 let mut argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, Some(self.compiler.type_primitive(PrimitiveType::GenericInteger)))).collect();
@@ -867,7 +881,21 @@ impl<'source> IrGenerator<'source> {
                 self.generate_ir_for_field_access(record_variable, field_name, pointer_type, span)
             },
             Expression::Index(ref array_expression, ref index_expression) => {
-                let array_variable = self.generate_ir_from_expression(array_expression, None);
+                let array_typ;
+                let mut array_variable;
+                let is_lvalue = self.expression_is_lvalue(array_expression);
+                if is_lvalue {
+                    let pointer_type2 = match pointer_type {
+                        PointerType::Array | PointerType::Reference => PointerType::Reference,
+                        PointerType::ArrayMutable | PointerType::Mutable => PointerType::Mutable,
+                    };
+                    array_variable = self.generate_pointer_from_expression(array_expression, pointer_type2);
+                    array_typ = self.compiler.type_deref(self.variables[array_variable].typ);
+                } else {
+                    array_variable = self.generate_ir_from_expression(array_expression, None);
+                    array_typ = self.variables[array_variable].typ;
+                }
+
                 let index_variable = self.generate_ir_from_expression(index_expression, Some(self.compiler.type_primitive(PrimitiveType::Natural64)));
 
                 let index_span = self.compiler.expression_span(index_expression);
@@ -875,11 +903,14 @@ impl<'source> IrGenerator<'source> {
                 let index_variable = self.autocast_variable_to_type(index_variable, self.compiler.type_primitive(PrimitiveType::Natural64), index_span);
 
                 let array_span = self.compiler.expression_span(array_expression);
-                let array_typ = self.variables[array_variable].typ;
                 let array_type_info = self.compiler.get_type_info(array_typ);
 
                 match *array_type_info {
                     Type::Pointer(pointer_type2, subtype) => {
+                        if is_lvalue {
+                            array_variable = self.dereference_pointer(array_variable);
+                        }
+
                         let result_type = match pointer_type2 {
                             PointerType::Array => self.compiler.type_refs(subtype),
                             PointerType::ArrayMutable => self.compiler.type_muts(subtype),
@@ -889,7 +920,22 @@ impl<'source> IrGenerator<'source> {
                             },
                         };
                         let result_variable = self.new_variable(Variable { typ: result_type, is_temporary: true });
-                        self.instructions().push(Instruction::Index(result_variable, array_variable, index_variable));
+                        self.instructions().push(Instruction::IndexPointer(result_variable, array_variable, index_variable));
+                        self.try_cast_pointer(result_variable, pointer_type, array_span)
+                    },
+                    Type::Array(_, subtype) => {
+                        if !is_lvalue {
+                            self.compiler.report_error(Error::InvalidLvalue(array_span));
+                            return self.generate_error()
+                        }
+
+                        let pointer_type2 = match *self.compiler.get_type_info(self.variables[array_variable].typ) {
+                            Type::Pointer(pointer_type2, ..) => pointer_type2,
+                            _ => unreachable!(),
+                        };
+                        let result_type = self.compiler.type_pointer(pointer_type2, subtype);
+                        let result_variable = self.new_variable(Variable { typ: result_type, is_temporary: true });
+                        self.instructions().push(Instruction::IndexArray(result_variable, array_variable, index_variable));
                         self.try_cast_pointer(result_variable, pointer_type, array_span)
                     },
                     _ => {
@@ -1056,7 +1102,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     Instruction::Load(destination, source) => write!(f, "%{} = load %{}", destination, source)?,
                     Instruction::Store(destination, source) => write!(f, "in %{} store %{}", destination, source)?,
                     Instruction::Field(destination, source, field_name) => write!(f, "%{} = fieldptr %{}, {}", destination, source, field_name)?,
-                    Instruction::Index(destination, source, index) => write!(f, "%{} = indexptr %{}, %{}", destination, source, index)?,
+                    Instruction::IndexPointer(destination, source, index) => write!(f, "%{} = indexptr %{}, %{}", destination, source, index)?,
+                    Instruction::IndexArray(destination, source, index) => write!(f, "%{} = indexarray %{}, %{}", destination, source, index)?,
 
                     Instruction::Add(variable1, variable2, variable3) => write!(f, "%{} = add %{}, %{}", variable1, variable2, variable3)?,
                     Instruction::Subtract(variable1, variable2, variable3) => write!(f, "%{} = subtract %{}, %{}", variable1, variable2, variable3)?,

@@ -75,6 +75,7 @@ impl<'source> LlvmBackend<'source> {
                     let function_type = LLVMFunctionType(return_typeref, param_typerefs.as_mut_ptr(), param_typerefs.len() as _, 0);
                     LLVMPointerType(function_type, 0)
                 },
+                Type::Array(size, subtype) => LLVMArrayType(self.translate_type(subtype), size as _),
                 Type::Error => unreachable!(),
             }
         }
@@ -184,6 +185,9 @@ impl<'source> LlvmBackend<'source> {
                 output += "Returns";
                 output += &*self.mangle_type_name(return_type);
                 output
+            },
+            Type::Array(size, subtype) => {
+                format!("Array{}Of{}", size, self.mangle_type_name(subtype))
             },
             Type::Error => "error".into(),
         }
@@ -438,8 +442,13 @@ impl<'source> FunctionTranslator<'source> {
 
                     self.variables[destination] = LLVMBuildGEP(self.backend.builder, self.variables[source], indices.as_mut_ptr(), indices.len() as _, b"\0".as_ptr() as *const _);
                 },
-                Instruction::Index(destination, source, index) => {
+                Instruction::IndexPointer(destination, source, index) => {
                     let mut indices = vec![self.variables[index]];
+
+                    self.variables[destination] = LLVMBuildGEP(self.backend.builder, self.variables[source], indices.as_mut_ptr(), indices.len() as _, b"\0".as_ptr() as *const _);
+                },
+                Instruction::IndexArray(destination, source, index) => {
+                    let mut indices = vec![LLVMConstInt(LLVMInt32Type(), 0, 0), self.variables[index]];
 
                     self.variables[destination] = LLVMBuildGEP(self.backend.builder, self.variables[source], indices.as_mut_ptr(), indices.len() as _, b"\0".as_ptr() as *const _);
                 },
@@ -534,6 +543,11 @@ impl<'source> FunctionTranslator<'source> {
                         },
                         CastType::IntegerToPointer => {
                             LLVMBuildIntToPtr(self.backend.builder, self.variables[source], destination_type, b"\0".as_ptr() as *const _)
+                        },
+                        CastType::PointerToArray => {
+                            let mut indices = vec![LLVMConstInt(LLVMInt32Type(), 0, 0), LLVMConstInt(LLVMInt32Type(), 0, 0)];
+
+                            LLVMBuildGEP(self.backend.builder, self.variables[source], indices.as_mut_ptr(), indices.len() as _, b"\0".as_ptr() as *const _)
                         },
                         CastType::Error => unreachable!(),
                     };

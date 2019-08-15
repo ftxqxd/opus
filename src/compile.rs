@@ -64,6 +64,7 @@ pub enum Type {
         argument_types: Box<[TypeId]>,
         return_type: TypeId,
     },
+    Array(u64, TypeId),
     Error,
 }
 
@@ -81,6 +82,8 @@ pub enum CastType {
     PointerToInteger,
     /// A cast from an integer type to any pointer type.
     IntegerToPointer,
+    /// A cast from a pointer to an array to an array pointer.
+    PointerToArray,
     /// Any internal cast that should not actually appear in the IR.
     Error,
 }
@@ -244,6 +247,10 @@ impl<'source> fmt::Display for TypePrinter<'source> {
                     write!(formatter, "{}", TypePrinter(self.0, argument_type))?;
                 }
                 write!(formatter, ") {}", TypePrinter(self.0, return_type))?;
+                ""
+            },
+            Type::Array(size, subtype) => {
+                write!(formatter, "{{{}}} {}", size, TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Error => "<error>",
@@ -555,8 +562,20 @@ impl<'source> Compiler<'source> {
         self.new_type_id(Type::Pointer(PointerType::ArrayMutable, other))
     }
 
+    pub fn type_array(&self, size: u64, other: TypeId) -> TypeId {
+        self.new_type_id(Type::Array(size, other))
+    }
+
     pub fn type_function(&self, argument_types: Box<[TypeId]>, return_type: TypeId) -> TypeId {
         self.new_type_id(Type::Function { argument_types, return_type })
+    }
+
+    pub fn type_deref(&self, typ: TypeId) -> TypeId {
+        match *self.get_type_info(typ) {
+            Type::Pointer(_, subtype) => subtype,
+            Type::Error => self.type_error(),
+            _ => unreachable!(),
+        }
     }
 
     pub fn int_type_width(&self, typ: TypeId) -> i32 {
@@ -596,6 +615,18 @@ impl<'source> Compiler<'source> {
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
                 if self.can_autocast_pointer_type(pointer_type1, pointer_type2) && self.types_match(typ1, typ2)
               => Some(CastType::PointerType),
+            (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
+              => match *self.get_type_info(typ1) {
+                Type::Array(_, element_type) if self.types_match(element_type, typ2) => {
+                    match (pointer_type1, pointer_type2) {
+                        (PointerType::Reference, PointerType::Array)
+                        | (PointerType::Mutable, PointerType::ArrayMutable)
+                        | (PointerType::Mutable, PointerType::Array) => Some(CastType::PointerToArray),
+                        _ => None,
+                    }
+                },
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -873,6 +904,7 @@ impl<'source> Compiler<'source> {
                 let typ = Type::Record(resolved_fields.into());
                 self.new_type_id(typ)
             },
+            parse::Type::Array(size, ref subtype) => self.type_array(size, self.resolve_type(subtype)),
         }
     }
 
