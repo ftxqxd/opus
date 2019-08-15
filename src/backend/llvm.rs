@@ -282,6 +282,9 @@ impl<'source> Backend for LlvmBackend<'source> {
             .arg("-o").arg(filename)
             .arg("-x").arg("none")
             .arg(&*object_filename);
+        for library_name in &self.compiler.options.linking {
+            command.arg(format!("-l{}", library_name));
+        }
 
         let mut compiler_process = command
             .stdin(Stdio::piped())

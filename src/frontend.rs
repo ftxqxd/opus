@@ -6,7 +6,7 @@ use argparse::{ArgumentParser, Store, StoreTrue};
 use typed_arena::Arena;
 use crate::parse::{Parser, Definition};
 use crate::generate_ir::IrGenerator;
-use crate::compile::{self, Compiler};
+use crate::compile::{self, Compiler, FrontendDirective};
 //use crate::backend::c::CBackend;
 use crate::backend::llvm::LlvmBackend;
 use crate::backend::Backend;
@@ -17,6 +17,7 @@ pub struct Options {
     pub no_link: bool,
     pub filename: String,
     pub output_path: Option<String>,
+    pub linking: Vec<String>,
 }
 
 pub fn main() {
@@ -25,6 +26,7 @@ pub fn main() {
         no_link: false,
         filename: String::new(),
         output_path: None,
+        linking: vec![],
     };
     {
         let mut ap = ArgumentParser::new();
@@ -95,12 +97,18 @@ pub fn main() {
         let directory = file.parent().unwrap();
         for boxed_definition in get_definitions(&mut compiler, source) {
             let definition = &**definition_arena.alloc(boxed_definition);
-            if let Some(path) = compiler.preload_definition(definition) {
-                let mut file2 = PathBuf::new();
-                file2.push(directory);
-                file2.push(String::from_utf8_lossy(path).to_string());
-                filenames.push(file2.clone());
-                files.push_back(file2);
+            match compiler.preload_definition(definition) {
+                FrontendDirective::Import(path) => {
+                    let mut file2 = PathBuf::new();
+                    file2.push(directory);
+                    file2.push(String::from_utf8_lossy(path).to_string());
+                    filenames.push(file2.clone());
+                    files.push_back(file2);
+                },
+                FrontendDirective::Library(name) => {
+                    compiler.options.linking.push(String::from_utf8_lossy(name).into());
+                },
+                FrontendDirective::None => {},
             }
             definitions.push(definition);
         }

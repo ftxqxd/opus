@@ -334,6 +334,13 @@ pub enum PrimitiveType {
     NumberOfPrimitives,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum FrontendDirective<'source> {
+    None,
+    Import(&'source [u8]),
+    Library(&'source [u8]),
+}
+
 impl<'source> Compiler<'source> {
     pub fn new(options: Options, type_arena: &'source mut Arena<Type>, function_arena: &'source mut Arena<Function>) -> Self {
         const SIZE: usize = PrimitiveType::NumberOfPrimitives as usize;
@@ -869,17 +876,18 @@ impl<'source> Compiler<'source> {
         }
     }
 
-    pub fn preload_definition(&mut self, definition: &'source Definition<'source>) -> Option<&'source [u8]> {
+    pub fn preload_definition(&mut self, definition: &'source Definition<'source>) -> FrontendDirective<'source> {
         match *definition {
             Definition::Type(name, ..) => {
                 // Make a new placeholder TypeId to be filled in with real type information later
                 let type_id = TypeId(self.type_arena.alloc(Type::Error));
                 self.type_resolution_map.insert(name, type_id);
                 self.reverse_type_resolution_map.insert(type_id.0, name);
-                None
+                FrontendDirective::None
             },
-            Definition::Variable(..) | Definition::Function(..) | Definition::Extern(..) => None,
-            Definition::Import(ref path) => Some(&**path),
+            Definition::Variable(..) | Definition::Function(..) | Definition::Extern(..) => FrontendDirective::None,
+            Definition::Import(ref path) => FrontendDirective::Import(&**path),
+            Definition::Library(ref path) => FrontendDirective::Library(&**path),
         }
     }
 
@@ -954,7 +962,7 @@ impl<'source> Compiler<'source> {
                     *pointer = typ;
                 }
             },
-            Definition::Import(..) => {},
+            Definition::Import(..) | Definition::Library(..) => {},
         }
     }
 

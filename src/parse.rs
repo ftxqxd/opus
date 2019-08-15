@@ -58,6 +58,7 @@ pub enum Token<'source> {
     Or,
     Not,
     Import,
+    Library,
     Proc,
     EndOfFile,
 }
@@ -130,6 +131,7 @@ impl<'source> fmt::Display for Token<'source> {
             Not => "not",
             Record => "record",
             Import => "import",
+            Library => "library",
             Proc => "proc",
             EndOfFile => "<end of file>",
         })?;
@@ -288,6 +290,7 @@ pub enum Definition<'source> {
     Type(&'source str, Box<Type<'source>>),
     Variable(Name<'source>, Box<Type<'source>>, Option<Box<Expression<'source>>>),
     Import(Box<[u8]>),
+    Library(Box<[u8]>),
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -669,6 +672,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
                     "import" => Ok(Token::Import),
+                    "library" => Ok(Token::Library),
                     "proc" => Ok(Token::Proc),
                     _ => Ok(Token::LowercaseIdentifier(identifier)),
                 }
@@ -1300,6 +1304,13 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Import(path)
+            },
+            Token::Library => {
+                let _ = self.parse_token();
+                let path = self.parse_string()?;
+                span = &self.source[low..self.position];
+
+                Definition::Library(path)
             },
             _ => {
                 let signature = self.parse_function_signature()?;
