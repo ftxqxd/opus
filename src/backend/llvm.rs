@@ -18,6 +18,7 @@ pub struct LlvmBackend<'source> {
     pub module: LLVMModuleRef,
     builder: LLVMBuilderRef,
 
+    null_type: LLVMTypeRef,
     string_type: LLVMTypeRef,
 
     function_map: HashMap<FunctionId, LLVMValueRef>,
@@ -41,6 +42,9 @@ impl<'source> LlvmBackend<'source> {
             let module = LLVMModuleCreateWithName(b"main\0".as_ptr() as *const _);
             let builder = LLVMCreateBuilderInContext(context);
 
+            let mut field_typerefs = vec![];
+            let null_type = LLVMStructType(field_typerefs.as_mut_ptr(), field_typerefs.len() as _, 0);
+
             // FIXME: len should be a size_t-like type
             let mut field_typerefs = vec![LLVMPointerType(LLVMInt8TypeInContext(context), 0), LLVMInt64TypeInContext(context)];
             let string_type = LLVMStructType(field_typerefs.as_mut_ptr(), field_typerefs.len() as _, 0);
@@ -51,6 +55,7 @@ impl<'source> LlvmBackend<'source> {
                 module,
                 builder,
 
+                null_type,
                 string_type,
 
                 function_map: HashMap::new(),
@@ -68,7 +73,7 @@ impl<'source> LlvmBackend<'source> {
                 Type::Natural64 | Type::Integer64 => LLVMInt64TypeInContext(self.context),
                 Type::Size | Type::Offset => LLVMInt64TypeInContext(self.context), // FIXME: should be target-dependent
                 Type::Generic | Type::GenericInteger => unreachable!(),
-                Type::Null => LLVMInt1TypeInContext(self.context),
+                Type::Null => self.null_type,
                 Type::Bool => LLVMInt1TypeInContext(self.context),
                 Type::String => self.string_type,
                 Type::Pointer(_, subtype) => LLVMPointerType(self.translate_type(subtype), 0),
@@ -412,7 +417,8 @@ impl<'source> FunctionTranslator<'source> {
                     self.variables[destination] = constant;
                 },
                 Instruction::Null(destination) => {
-                    let constant = LLVMConstInt(self.variable_types[destination], 0, 0);
+                    let mut vals = vec![];
+                    let constant = LLVMConstStruct(vals.as_mut_ptr(), vals.len() as _, 0);
                     self.variables[destination] = constant;
                 },
                 Instruction::Bool(destination, is_true) => {
