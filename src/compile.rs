@@ -59,6 +59,7 @@ pub enum Type {
     Bool,
     Null,
     Pointer(PointerType, TypeId),
+    String,
     Record(Box<[(Box<str>, TypeId)]>),
     Function {
         argument_types: Box<[TypeId]>,
@@ -212,6 +213,7 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Generic => "<unknown>",
             Type::Bool => "bool",
             Type::Null => "null",
+            Type::String => "string",
             Type::Pointer(PointerType::Reference, subtype) => {
                 write!(formatter, "ref {}", TypePrinter(self.0, subtype))?;
                 ""
@@ -338,6 +340,7 @@ pub enum PrimitiveType {
     Error,
     GenericInteger,
     Generic,
+    String,
     NumberOfPrimitives,
 }
 
@@ -367,6 +370,7 @@ impl<'source> Compiler<'source> {
                 10 => Type::Error,
                 11 => Type::GenericInteger,
                 12 => Type::Generic,
+                13 => Type::String,
                 _ => unreachable!(),
             };
             let pointer = type_arena.alloc(type_info);
@@ -542,6 +546,10 @@ impl<'source> Compiler<'source> {
         self.type_primitive(PrimitiveType::Null)
     }
 
+    pub fn type_string(&self) -> TypeId {
+        self.type_primitive(PrimitiveType::String)
+    }
+
     pub fn type_pointer(&self, pointer_type: PointerType, other: TypeId) -> TypeId {
         self.new_type_id(Type::Pointer(pointer_type, other))
     }
@@ -673,6 +681,7 @@ impl<'source> Compiler<'source> {
             (&Type::Generic, &Type::Generic) => true,
             (&Type::Bool, &Type::Bool) => true,
             (&Type::Null, &Type::Null) => true,
+            (&Type::String, &Type::String) => true,
             (&Type::Pointer(type1, subtype1), &Type::Pointer(type2, subtype2)) => type1 == type2 && self.types_match(subtype1, subtype2),
             (&Type::Record(ref fields1), &Type::Record(ref fields2)) => {
                 if fields1.len() != fields2.len() {
@@ -701,6 +710,7 @@ impl<'source> Compiler<'source> {
                 }
                 true
             },
+            (&Type::Array(size1, type1), &Type::Array(size2, type2)) => size1 == size2 && self.types_match(type1, type2) ,
             (&Type::Error, &Type::Error) => true,
             _ => false,
         }
@@ -876,6 +886,7 @@ impl<'source> Compiler<'source> {
             parse::Type::Name("nat32") => self.type_primitive(PrimitiveType::Natural32),
             parse::Type::Name("nat64") => self.type_primitive(PrimitiveType::Natural64),
             parse::Type::Name("bool")  => self.type_primitive(PrimitiveType::Bool),
+            parse::Type::Name("string")  => self.type_primitive(PrimitiveType::String),
             parse::Type::Name(name) => {
                 if let Some(&typ) = self.type_resolution_map.get(name) {
                     typ

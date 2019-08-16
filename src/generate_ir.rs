@@ -17,6 +17,7 @@ pub enum Instruction<'source> {
     Load(VariableId, VariableId),
     Store(VariableId, VariableId),
     Field(VariableId, VariableId, &'source str),
+    BuiltinField(VariableId, VariableId, u32),
     IndexPointer(VariableId, VariableId, VariableId),
     IndexArray(VariableId, VariableId, VariableId),
 
@@ -558,7 +559,7 @@ impl<'source> IrGenerator<'source> {
                 variable_id
             },
             Expression::String(ref bytes) => {
-                let typ = self.compiler.type_refs(self.compiler.type_primitive(PrimitiveType::Natural8));
+                let typ = self.compiler.type_string();
                 let variable_id = self.new_variable(Variable { typ, is_temporary: true });
                 self.instructions().push(Instruction::String(variable_id, bytes.clone()));
                 variable_id
@@ -1008,6 +1009,22 @@ impl<'source> IrGenerator<'source> {
                     self.generate_error()
                 }
             },
+            Type::String => {
+                let (field_index, field_type) = match field_name {
+                    "data" => (0, self.compiler.type_refs(self.compiler.type_primitive(PrimitiveType::Natural8))),
+                    // FIXME: this should be a natsize-like type
+                    "length" => (1, self.compiler.type_primitive(PrimitiveType::Natural64)),
+                    _ => {
+                        self.compiler.report_error(Error::FieldDoesNotExist(span, typ, field_name));
+                        return self.generate_error()
+                    },
+                };
+
+                let result_type = self.compiler.type_pointer(pointer_type, field_type);
+                let result_variable = self.new_variable(Variable { typ: result_type, is_temporary: true });
+                self.instructions().push(Instruction::BuiltinField(result_variable, record_variable, field_index));
+                result_variable
+            },
             _ => {
                 self.compiler.report_error(Error::FieldAccessOnNonRecord(span, typ));
                 self.generate_error()
@@ -1102,6 +1119,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     Instruction::Load(destination, source) => write!(f, "%{} = load %{}", destination, source)?,
                     Instruction::Store(destination, source) => write!(f, "in %{} store %{}", destination, source)?,
                     Instruction::Field(destination, source, field_name) => write!(f, "%{} = fieldptr %{}, {}", destination, source, field_name)?,
+                    Instruction::BuiltinField(destination, source, field_index) => write!(f, "%{} = builtinfieldptr %{}, {}", destination, source, field_index)?,
                     Instruction::IndexPointer(destination, source, index) => write!(f, "%{} = indexptr %{}, %{}", destination, source, index)?,
                     Instruction::IndexArray(destination, source, index) => write!(f, "%{} = indexarray %{}, %{}", destination, source, index)?,
 

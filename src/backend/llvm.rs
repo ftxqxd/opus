@@ -18,6 +18,8 @@ pub struct LlvmBackend<'source> {
     pub module: LLVMModuleRef,
     builder: LLVMBuilderRef,
 
+    string_type: LLVMTypeRef,
+
     function_map: HashMap<FunctionId, LLVMValueRef>,
     global_map: HashMap<GlobalId, LLVMValueRef>, // FIXME: should this be a Vec instead?
 }
@@ -39,11 +41,17 @@ impl<'source> LlvmBackend<'source> {
             let module = LLVMModuleCreateWithName(b"main\0".as_ptr() as *const _);
             let builder = LLVMCreateBuilderInContext(context);
 
+            // FIXME: len should be a size_t-like type
+            let mut field_typerefs = vec![LLVMPointerType(LLVMInt8TypeInContext(context), 0), LLVMInt64TypeInContext(context)];
+            let string_type = LLVMStructType(field_typerefs.as_mut_ptr(), field_typerefs.len() as _, 0);
+
             LlvmBackend {
                 compiler,
                 context,
                 module,
                 builder,
+
+                string_type,
 
                 function_map: HashMap::new(),
                 global_map: HashMap::new(),
@@ -61,6 +69,7 @@ impl<'source> LlvmBackend<'source> {
                 Type::Generic | Type::GenericInteger => unreachable!(),
                 Type::Null => LLVMInt1TypeInContext(self.context),
                 Type::Bool => LLVMInt1TypeInContext(self.context),
+                Type::String => self.string_type,
                 Type::Pointer(_, subtype) => LLVMPointerType(self.translate_type(subtype), 0),
                 Type::Record(ref fields) => {
                     let mut field_typerefs = vec![];
@@ -158,6 +167,7 @@ impl<'source> LlvmBackend<'source> {
             Type::GenericInteger | Type::Generic => unreachable!(),
             Type::Null => "null".into(),
             Type::Bool => "bool".into(),
+            Type::String => "string".into(),
             Type::Pointer(pointer_type, subtype) => {
                 let prefix = match pointer_type {
                     PointerType::Reference => "Reference",
@@ -407,8 +417,19 @@ impl<'source> FunctionTranslator<'source> {
                     self.variables[destination] = constant;
                 },
                 Instruction::String(destination, ref value) => {
-                    let cstring = CString::new(&**value).unwrap();
-                    self.variables[destination] = LLVMBuildGlobalStringPtr(self.backend.builder, cstring.as_ptr(), b"\0".as_ptr() as *const _);
+                    let array_value = LLVMConstStringInContext(self.backend.context, (**value).as_ptr() as _, value.len() as _, 1);
+                    let array_type = LLVMArrayType(LLVMInt8Type(), value.len() as _);
+                    let global_value = LLVMAddGlobal(self.backend.module, array_type, b"\0".as_ptr() as *const _);
+                    LLVMSetGlobalConstant(global_value, 1);
+                    LLVMSetInitializer(global_value, array_value);
+
+                    let zero = LLVMConstInt(LLVMInt32Type(), 0, 0);
+                    let mut indices = vec![zero, zero];
+                    let pointer = LLVMConstGEP(global_value, indices.as_mut_ptr() as _, indices.len() as _);
+
+                    let length = LLVMConstInt(LLVMInt64TypeInContext(self.backend.context), value.len() as _, 0);
+                    let mut values = vec![pointer, length];
+                    self.variables[destination] = LLVMConstStruct(values.as_mut_ptr(), values.len() as _, 0);
                 },
 
                 Instruction::Call(destination, function, ref arguments) => {
@@ -440,6 +461,10 @@ impl<'source> FunctionTranslator<'source> {
 
                     let mut indices = vec![LLVMConstInt(LLVMInt32Type(), 0, 0), LLVMConstInt(LLVMInt32Type(), index as _, 0)];
 
+                    self.variables[destination] = LLVMBuildGEP(self.backend.builder, self.variables[source], indices.as_mut_ptr(), indices.len() as _, b"\0".as_ptr() as *const _);
+                },
+                Instruction::BuiltinField(destination, source, field_index) => {
+                    let mut indices = vec![LLVMConstInt(LLVMInt32Type(), 0, 0), LLVMConstInt(LLVMInt32Type(), field_index as _, 0)];
                     self.variables[destination] = LLVMBuildGEP(self.backend.builder, self.variables[source], indices.as_mut_ptr(), indices.len() as _, b"\0".as_ptr() as *const _);
                 },
                 Instruction::IndexPointer(destination, source, index) => {
