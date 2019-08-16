@@ -496,6 +496,7 @@ impl<'source> IrGenerator<'source> {
         match *expression {
             Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
             | Expression::Field(..) | Expression::Index(..) | Expression::Record(..) => true,
+            Expression::Parentheses(ref subexpression) => self.expression_is_lvalue(subexpression),
             _ => false,
         }
     }
