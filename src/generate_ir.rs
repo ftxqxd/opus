@@ -11,6 +11,9 @@ pub enum Instruction<'source> {
     Bool(VariableId, bool),
     String(VariableId, Box<[u8]>),
 
+    Sizeof(VariableId, TypeId),
+    Alignof(VariableId, TypeId),
+
     Call(VariableId, VariableId, Box<[VariableId]>),
 
     Allocate(VariableId),
@@ -771,6 +774,18 @@ impl<'source> IrGenerator<'source> {
                     }
                 }
             },
+            Expression::Sizeof(ref type_expression) => {
+                let variable = self.new_variable(Variable { typ: self.compiler.type_primitive(PrimitiveType::Size), is_temporary: true });
+                let typ = self.compiler.resolve_type(type_expression);
+                self.instructions().push(Instruction::Sizeof(variable, typ));
+                variable
+            },
+            Expression::Alignof(ref type_expression) => {
+                let variable = self.new_variable(Variable { typ: self.compiler.type_primitive(PrimitiveType::Size), is_temporary: true });
+                let typ = self.compiler.resolve_type(type_expression);
+                self.instructions().push(Instruction::Alignof(variable, typ));
+                variable
+            },
             Expression::Parentheses(ref subexpression) => {
                 self.generate_ir_from_expression(subexpression, expected_type)
             },
@@ -1110,6 +1125,9 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
                     Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
                     Instruction::String(destination, ref bytes) => write!(f, "%{} = {:?}", destination, String::from_utf8_lossy(bytes))?,
+
+                    Instruction::Sizeof(destination, typ) => write!(f, "%{} = sizeof {}", destination, TypePrinter(self.compiler, typ))?,
+                    Instruction::Alignof(destination, typ) => write!(f, "%{} = alignof {}", destination, TypePrinter(self.compiler, typ))?,
 
                     Instruction::Call(destination, variable, ref arguments) => {
                         write!(f, "%{} = call %{}", destination, variable)?;

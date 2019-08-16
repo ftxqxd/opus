@@ -57,6 +57,8 @@ pub enum Token<'source> {
     And,
     Or,
     Not,
+    Sizeof,
+    Alignof,
     Import,
     Library,
     Proc,
@@ -133,6 +135,8 @@ impl<'source> fmt::Display for Token<'source> {
             And => "and",
             Or => "or",
             Not => "not",
+            Sizeof => "sizeof",
+            Alignof => "alignof",
             Record => "record",
             Import => "import",
             Library => "library",
@@ -257,6 +261,8 @@ pub enum Expression<'source> {
     Index(Box<Expression<'source>>, Box<Expression<'source>>),
     Cast(Box<Expression<'source>>, Box<Type<'source>>),
     Negate(Box<Expression<'source>>),
+    Sizeof(Box<Type<'source>>),
+    Alignof(Box<Type<'source>>),
     Parentheses(Box<Expression<'source>>),
 }
 
@@ -678,6 +684,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "and" => Ok(Token::And),
                     "or" => Ok(Token::Or),
                     "not" => Ok(Token::Not),
+                    "sizeof" => Ok(Token::Sizeof),
+                    "alignof" => Ok(Token::Alignof),
                     "import" => Ok(Token::Import),
                     "library" => Ok(Token::Library),
                     "proc" => Ok(Token::Proc),
@@ -1042,6 +1050,14 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.correct_precedence(&mut *expression_box);
                 self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 return Ok(expression_box)
+            },
+            Token::Sizeof => {
+                let typ = self.parse_type()?;
+                Expression::Sizeof(typ)
+            },
+            Token::Alignof => {
+                let typ = self.parse_type()?;
+                Expression::Alignof(typ)
             },
             Token::Proc => {
                 self.expect(&Token::LeftParenthesis)?;

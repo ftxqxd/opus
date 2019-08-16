@@ -435,6 +435,15 @@ impl<'source> FunctionTranslator<'source> {
                     self.variables[destination] = LLVMConstStruct(values.as_mut_ptr(), values.len() as _, 0);
                 },
 
+                Instruction::Sizeof(destination, type_id) => {
+                    let type_ref = self.backend.translate_type(type_id);
+                    self.variables[destination] = LLVMSizeOf(type_ref);
+                },
+                Instruction::Alignof(destination, type_id) => {
+                    let type_ref = self.backend.translate_type(type_id);
+                    self.variables[destination] = LLVMAlignOf(type_ref);
+                },
+
                 Instruction::Call(destination, function, ref arguments) => {
                     let llvm_function = self.variables[function];
                     let mut llvm_arguments: Vec<_> = arguments.iter().map(|&x| self.variables[x]).collect();
