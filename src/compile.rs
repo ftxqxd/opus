@@ -636,6 +636,12 @@ impl<'source> Compiler<'source> {
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
                 if self.can_autocast_pointer_type(pointer_type1, pointer_type2) && self.types_match(typ1, typ2)
               => Some(CastType::PointerType),
+            // special case cast mut t/ref t -> muts nat8/refs nat8
+            (&Type::Pointer(PointerType::Mutable, _), &Type::Pointer(PointerType::ArrayMutable, typ2))
+            | (&Type::Pointer(PointerType::Mutable, _), &Type::Pointer(PointerType::Array, typ2))
+            | (&Type::Pointer(PointerType::Reference, _), &Type::Pointer(PointerType::Array, typ2))
+                if self.types_match(typ2, self.type_primitive(PrimitiveType::Natural8))
+              => Some(CastType::PointerType),
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
               => match *self.get_type_info(typ1) {
                 Type::Array(_, element_type) if self.types_match(element_type, typ2) => {
