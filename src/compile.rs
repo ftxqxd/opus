@@ -642,6 +642,12 @@ impl<'source> Compiler<'source> {
             | (&Type::Pointer(PointerType::Reference, _), &Type::Pointer(PointerType::Array, typ2))
                 if self.types_match(typ2, self.type_primitive(PrimitiveType::Natural8))
               => Some(CastType::PointerType),
+            // muts nat8/refs nat8 -> mut t/ref t
+            (&Type::Pointer(PointerType::ArrayMutable, typ1), &Type::Pointer(PointerType::Mutable, _))
+            | (&Type::Pointer(PointerType::ArrayMutable, typ1), &Type::Pointer(PointerType::Reference, _))
+            | (&Type::Pointer(PointerType::Array, typ1), &Type::Pointer(PointerType::Reference, _))
+                if self.types_match(typ1, self.type_primitive(PrimitiveType::Natural8))
+              => Some(CastType::PointerType),
             (&Type::Pointer(pointer_type1, typ1), &Type::Pointer(pointer_type2, typ2))
               => match *self.get_type_info(typ1) {
                 Type::Array(_, element_type) if self.types_match(element_type, typ2) => {
