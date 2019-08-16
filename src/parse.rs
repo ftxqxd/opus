@@ -96,7 +96,11 @@ impl<'source> fmt::Display for Token<'source> {
                 &buffer
             },
             Integer(value, Some((is_signed, size))) => {
-                buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
+                if size == 0 {
+                    buffer = format!("{}{}", value, if is_signed { "o" } else { "s" });
+                } else {
+                    buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
+                }
                 &buffer
             },
             String(ref bytes) => {
@@ -588,6 +592,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 // look for type suffix
                 let mut signed = true;
                 let size = match self.peek() {
+                    Some('s') => { signed = false; Some(0) },
+                    Some('o') => { signed = true; Some(0) },
                     Some(c @ 'i') | Some(c @ 'n') => {
                         signed = c == 'i';
 

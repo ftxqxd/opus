@@ -66,6 +66,7 @@ impl<'source> LlvmBackend<'source> {
                 Type::Natural16 | Type::Integer16 => LLVMInt16TypeInContext(self.context),
                 Type::Natural32 | Type::Integer32 => LLVMInt32TypeInContext(self.context),
                 Type::Natural64 | Type::Integer64 => LLVMInt64TypeInContext(self.context),
+                Type::Size | Type::Offset => LLVMInt64TypeInContext(self.context), // FIXME: should be target-dependent
                 Type::Generic | Type::GenericInteger => unreachable!(),
                 Type::Null => LLVMInt1TypeInContext(self.context),
                 Type::Bool => LLVMInt1TypeInContext(self.context),
@@ -164,6 +165,8 @@ impl<'source> LlvmBackend<'source> {
             Type::Natural16 => "nat16".into(),
             Type::Natural32 => "nat32".into(),
             Type::Natural64 => "nat64".into(),
+            Type::Size => "size".into(),
+            Type::Offset => "offset".into(),
             Type::GenericInteger | Type::Generic => unreachable!(),
             Type::Null => "null".into(),
             Type::Bool => "bool".into(),

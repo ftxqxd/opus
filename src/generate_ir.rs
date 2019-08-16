@@ -523,10 +523,12 @@ impl<'source> IrGenerator<'source> {
                         (false, 16) => PrimitiveType::Natural16,
                         (false, 32) => PrimitiveType::Natural32,
                         (false, 64) => PrimitiveType::Natural64,
+                        (false, 0) => PrimitiveType::Size,
                         (true, 8) => PrimitiveType::Integer8,
                         (true, 16) => PrimitiveType::Integer16,
                         (true, 32) => PrimitiveType::Integer32,
                         (true, 64) => PrimitiveType::Integer64,
+                        (true, 0) => PrimitiveType::Offset,
                         _ => unreachable!(),
                     }),
                     None => match expected_type.map(|x| self.compiler.get_type_info(x)) {
@@ -538,6 +540,8 @@ impl<'source> IrGenerator<'source> {
                         | Some(&Type::Natural16)
                         | Some(&Type::Natural32)
                         | Some(&Type::Natural64)
+                        | Some(&Type::Size)
+                        | Some(&Type::Offset)
                         | Some(&Type::GenericInteger) => {
                             expected_type.unwrap()
                         },
@@ -735,7 +739,8 @@ impl<'source> IrGenerator<'source> {
                     Type::Integer8
                     | Type::Integer16
                     | Type::Integer32
-                    | Type::Integer64 => {
+                    | Type::Integer64
+                    | Type::Offset => {
                         let output_variable = Variable { typ: subtype.clone(), is_temporary: true };
                         let output_index = self.new_variable(output_variable);
 
@@ -897,11 +902,10 @@ impl<'source> IrGenerator<'source> {
                     array_typ = self.variables[array_variable].typ;
                 }
 
-                let index_variable = self.generate_ir_from_expression(index_expression, Some(self.compiler.type_primitive(PrimitiveType::Natural64)));
+                let index_variable = self.generate_ir_from_expression(index_expression, Some(self.compiler.type_primitive(PrimitiveType::Size)));
 
                 let index_span = self.compiler.expression_span(index_expression);
-                // FIXME: should be a type like natsize instead of nat64
-                let index_variable = self.autocast_variable_to_type(index_variable, self.compiler.type_primitive(PrimitiveType::Natural64), index_span);
+                let index_variable = self.autocast_variable_to_type(index_variable, self.compiler.type_primitive(PrimitiveType::Size), index_span);
 
                 let array_span = self.compiler.expression_span(array_expression);
                 let array_type_info = self.compiler.get_type_info(array_typ);
@@ -1012,8 +1016,7 @@ impl<'source> IrGenerator<'source> {
             Type::String => {
                 let (field_index, field_type) = match field_name {
                     "data" => (0, self.compiler.type_refs(self.compiler.type_primitive(PrimitiveType::Natural8))),
-                    // FIXME: this should be a natsize-like type
-                    "length" => (1, self.compiler.type_primitive(PrimitiveType::Natural64)),
+                    "length" => (1, self.compiler.type_primitive(PrimitiveType::Size)),
                     _ => {
                         self.compiler.report_error(Error::FieldDoesNotExist(span, typ, field_name));
                         return self.generate_error()

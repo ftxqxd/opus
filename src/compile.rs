@@ -50,6 +50,8 @@ pub enum Type {
     Natural16,
     Natural32,
     Natural64,
+    Offset,
+    Size,
     /// This is an internal type used to resolve integer literal types in function calls.  See
     /// `Compiler::lookup_function`.
     GenericInteger,
@@ -152,8 +154,8 @@ impl Value {
         }
 
         match *typ {
-            Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64
-            | Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 => match *self {
+            Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64 | Type::Size
+            | Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 | Type::Offset => match *self {
                 Value::Integer(..) => true,
                 _ => false,
             },
@@ -165,8 +167,8 @@ impl Value {
 impl Type {
     pub fn is_integral(&self) -> bool {
         match *self {
-            Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64
-            | Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 => true,
+            Type::Natural8 | Type::Natural16 | Type::Natural32 | Type::Natural64 | Type::Size
+            | Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 | Type::Offset => true,
             _ => false,
         }
     }
@@ -209,6 +211,8 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Natural16 => "nat16",
             Type::Natural32 => "nat32",
             Type::Natural64 => "nat64",
+            Type::Size => "size",
+            Type::Offset => "offset",
             Type::GenericInteger => "<integer>",
             Type::Generic => "<unknown>",
             Type::Bool => "bool",
@@ -341,6 +345,8 @@ pub enum PrimitiveType {
     GenericInteger,
     Generic,
     String,
+    Size,
+    Offset,
     NumberOfPrimitives,
 }
 
@@ -371,6 +377,8 @@ impl<'source> Compiler<'source> {
                 11 => Type::GenericInteger,
                 12 => Type::Generic,
                 13 => Type::String,
+                14 => Type::Size,
+                15 => Type::Offset,
                 _ => unreachable!(),
             };
             let pointer = type_arena.alloc(type_info);
@@ -416,6 +424,8 @@ impl<'source> Compiler<'source> {
                 PrimitiveType::Natural16,
                 PrimitiveType::Natural32,
                 PrimitiveType::Natural64,
+                PrimitiveType::Size,
+                PrimitiveType::Offset,
             ] {
                 let typ = this.type_primitive(primitive);
                 let arguments = vec![typ, typ];
@@ -451,6 +461,8 @@ impl<'source> Compiler<'source> {
                 PrimitiveType::Natural16,
                 PrimitiveType::Natural32,
                 PrimitiveType::Natural64,
+                PrimitiveType::Size,
+                PrimitiveType::Offset,
                 PrimitiveType::Bool,
                 PrimitiveType::Null,
             ] {
@@ -592,13 +604,14 @@ impl<'source> Compiler<'source> {
             Type::Integer16 | Type::Natural16 => 16,
             Type::Integer32 | Type::Natural32 => 32,
             Type::Integer64 | Type::Natural64 => 64,
+            Type::Size | Type::Offset => 64, // FIXME: should be target-dependent
             _ => unreachable!(),
         }
     }
 
     pub fn type_is_signed(&self, typ: TypeId) -> bool {
         match *self.get_type_info(typ) {
-            Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 => true,
+            Type::Integer8 | Type::Integer16 | Type::Integer32 | Type::Integer64 | Type::Offset => true,
             _ => false,
         }
     }
@@ -677,6 +690,8 @@ impl<'source> Compiler<'source> {
             (&Type::Natural16, &Type::Natural16) => true,
             (&Type::Natural32, &Type::Natural32) => true,
             (&Type::Natural64, &Type::Natural64) => true,
+            (&Type::Size, &Type::Size) => true,
+            (&Type::Offset, &Type::Offset) => true,
             (&Type::GenericInteger, &Type::GenericInteger) => true,
             (&Type::Generic, &Type::Generic) => true,
             (&Type::Bool, &Type::Bool) => true,
@@ -885,6 +900,8 @@ impl<'source> Compiler<'source> {
             parse::Type::Name("nat16") => self.type_primitive(PrimitiveType::Natural16),
             parse::Type::Name("nat32") => self.type_primitive(PrimitiveType::Natural32),
             parse::Type::Name("nat64") => self.type_primitive(PrimitiveType::Natural64),
+            parse::Type::Name("size") => self.type_primitive(PrimitiveType::Size),
+            parse::Type::Name("offset") => self.type_primitive(PrimitiveType::Offset),
             parse::Type::Name("bool")  => self.type_primitive(PrimitiveType::Bool),
             parse::Type::Name("string")  => self.type_primitive(PrimitiveType::String),
             parse::Type::Name(name) => {
