@@ -154,10 +154,13 @@ fn compile_source<'source>(compiler: &'source mut Compiler<'source>, definitions
 
     if translate {
         for definition in definitions {
-            if let Definition::Variable(ref name, ..) = **definition {
-                let global_id = compiler.variable_resolution_map[name];
-                let &(typ, ref value) = &compiler.globals[global_id];
-                backend.add_global(global_id, typ, value);
+            match **definition {
+                Definition::Variable(ref name, ..) | Definition::Constant(ref name, ..) => {
+                    let global_id = compiler.global_resolution_map[name];
+                    let &(typ, ref value) = &compiler.globals[global_id];
+                    backend.add_global(global_id, typ, value);
+                },
+                _ => {},
             }
         }
 

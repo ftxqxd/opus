@@ -96,13 +96,9 @@ impl<'source> LlvmBackend<'source> {
         }
     }
 
-    pub fn add_global(&mut self, global_id: GlobalId, typ: TypeId, value: &Value) {
-        let llvm_type = self.translate_type(typ);
-
+    fn translate_value(&mut self, llvm_type: LLVMTypeRef, typ: TypeId, value: &Value) -> LLVMValueRef {
         unsafe {
-            let global_value = LLVMAddGlobal(self.module, llvm_type, b"\0".as_ptr() as *const _);
-
-            let llvm_value = match *value {
+            match *value {
                 Value::Integer(i) => {
                     LLVMConstInt(llvm_type, i as _, self.compiler.type_is_signed(typ) as _)
                 },
@@ -110,9 +106,20 @@ impl<'source> LlvmBackend<'source> {
                     LLVMGetUndef(llvm_type)
                 },
                 Value::Error => unreachable!(),
-            };
+            }
+        }
+    }
 
-            LLVMSetInitializer(global_value, llvm_value);
+    pub fn add_global(&mut self, global_id: GlobalId, typ: TypeId, value: &Value) {
+        let llvm_type = self.translate_type(typ);
+
+        unsafe {
+            let mut global_value = self.translate_value(llvm_type, typ, value);
+            if !self.compiler.global_is_constant[global_id] {
+                let llvm_value = global_value;
+                global_value = LLVMAddGlobal(self.module, llvm_type, b"\0".as_ptr() as *const _);
+                LLVMSetInitializer(global_value, llvm_value);
+            }
             self.global_map.insert(global_id, global_value);
         }
     }
@@ -554,7 +561,10 @@ impl<'source> FunctionTranslator<'source> {
                 Instruction::Function(destination, function) => {
                     self.variables[destination] = self.backend.function_map[&function];
                 },
-                Instruction::Global(destination, global_id) => {
+                Instruction::GlobalVariable(destination, global_id) => {
+                    self.variables[destination] = self.backend.global_map[&global_id];
+                },
+                Instruction::GlobalConstant(destination, global_id) => {
                     self.variables[destination] = self.backend.global_map[&global_id];
                 },
 

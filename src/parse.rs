@@ -35,6 +35,7 @@ pub enum Token<'source> {
     Indent,
     Dedent,
     Var,
+    Const,
     Return,
     If,
     Else,
@@ -114,6 +115,7 @@ impl<'source> fmt::Display for Token<'source> {
             Indent => "<indent>",
             Dedent => "<dedent>",
             Var => "var",
+            Const => "const",
             Return => "return",
             If => "if",
             Else => "else",
@@ -300,6 +302,7 @@ pub enum Definition<'source> {
     Extern(FunctionSignature<'source>),
     Type(&'source str, Box<Type<'source>>),
     Variable(Name<'source>, Box<Type<'source>>, Option<Box<Expression<'source>>>),
+    Constant(Name<'source>, Box<Type<'source>>, Box<Expression<'source>>),
     Import(Box<[u8]>),
     Library(Box<[u8]>),
 }
@@ -662,6 +665,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let identifier = &self.source[old_position..old_position + byte_len];
                 match identifier {
                     "var" => Ok(Token::Var),
+                    "const" => Ok(Token::Const),
                     "return" => Ok(Token::Return),
                     "if" => Ok(Token::If),
                     "else" => Ok(Token::Else),
@@ -1328,6 +1332,17 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 span = &self.source[low..self.position];
 
                 Definition::Variable(variable_name, type_expression, value_option)
+            },
+            Token::Const => {
+                let _ = self.parse_token();
+                let variable_name = self.parse_name()?;
+                self.expect(&Token::Colon)?;
+                let type_expression = self.parse_type()?;
+                self.expect(&Token::ColonEquals)?;
+                let value = self.parse_expression()?;
+                span = &self.source[low..self.position];
+
+                Definition::Constant(variable_name, type_expression, value)
             },
             Token::Type => {
                 let _ = self.parse_token();

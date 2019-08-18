@@ -36,7 +36,8 @@ pub enum Instruction<'source> {
     GreaterThanEquals(VariableId, VariableId, VariableId),
 
     Function(VariableId, FunctionId),
-    Global(VariableId, GlobalId),
+    GlobalVariable(VariableId, GlobalId),
+    GlobalConstant(VariableId, GlobalId),
 
     Not(VariableId, VariableId),
     Negate(VariableId, VariableId),
@@ -520,6 +521,21 @@ impl<'source> IrGenerator<'source> {
         let expression_span = self.compiler.expression_span(expression);
 
         match *expression {
+            // need this here for constants, which can't be handled by
+            // generate_pointer_from_expression as they aren't lvalues
+            Expression::Variable(ref name) => {
+                if let Some(&global_id) = self.compiler.global_resolution_map.get(&Name::Simple(name)) {
+                    if self.compiler.global_is_constant[global_id] {
+                        let (typ, _) = self.compiler.globals[global_id];
+                        let variable_id = self.new_variable(Variable { typ, is_temporary: true });
+                        self.instructions().push(Instruction::GlobalConstant(variable_id, global_id));
+                        return variable_id
+                    }
+                }
+
+                let pointer_variable_id = self.generate_pointer_from_expression(expression, PointerType::Reference);
+                self.dereference_pointer(pointer_variable_id)
+            },
             Expression::Integer(i, meta) => {
                 let typ = match meta {
                     Some(x) => self.compiler.type_primitive(match x {
@@ -573,7 +589,7 @@ impl<'source> IrGenerator<'source> {
                 variable_id
             },
             // Remember to update expression_is_lvalue when adding more lvalues here!
-            Expression::Dereference(..) | Expression::Variable(..) | Expression::VariableDefinition(..)
+            Expression::Dereference(..) | Expression::VariableDefinition(..)
             | Expression::Field(..) | Expression::Index(..) | Expression::Record(..) => {
                 let pointer_variable_id = self.generate_pointer_from_expression(expression, PointerType::Reference);
                 self.dereference_pointer(pointer_variable_id)
@@ -868,11 +884,16 @@ impl<'source> IrGenerator<'source> {
             Expression::Variable(name) => {
                 if let Some(&variable_id) = self.locals.get(&Name::Simple(name)) {
                     self.try_cast_pointer(variable_id, pointer_type, span)
-                } else if let Some(&global_id) = self.compiler.variable_resolution_map.get(&Name::Simple(name)) {
+                } else if let Some(&global_id) = self.compiler.global_resolution_map.get(&Name::Simple(name)) {
+                    if self.compiler.global_is_constant[global_id] {
+                        self.compiler.report_error(Error::InvalidLvalue(span));
+                        return self.generate_error()
+                    }
+
                     let (subtype, _) = self.compiler.globals[global_id];
                     let typ = self.compiler.type_mut(subtype);
                     let variable_id = self.new_variable(Variable { typ, is_temporary: true });
-                    self.instructions().push(Instruction::Global(variable_id, global_id));
+                    self.instructions().push(Instruction::GlobalVariable(variable_id, global_id));
                     self.try_cast_pointer(variable_id, pointer_type, span)
                 } else {
                     self.compiler.report_error(Error::UndefinedVariable(name));
@@ -1157,7 +1178,8 @@ impl<'source> fmt::Display for IrGenerator<'source> {
                     Instruction::GreaterThanEquals(variable1, variable2, variable3) => write!(f, "%{} = greaterthanequals %{}, %{}", variable1, variable2, variable3)?,
 
                     Instruction::Function(variable, function) => write!(f, "%{} = global ${}", variable, FunctionPrinter(self.compiler, function))?,
-                    Instruction::Global(variable, global_id) => write!(f, "%{} = global %{}", variable, global_id)?,
+                    Instruction::GlobalVariable(variable, global_id) => write!(f, "%{} = globalvar %{}", variable, global_id)?,
+                    Instruction::GlobalConstant(variable, global_id) => write!(f, "%{} = globalconst %{}", variable, global_id)?,
 
                     Instruction::Not(variable1, variable2) => write!(f, "%{} = not %{}", variable1, variable2)?,
                     Instruction::Negate(variable1, variable2) => write!(f, "%{} = negate %{}", variable1, variable2)?,

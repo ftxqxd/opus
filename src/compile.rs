@@ -11,8 +11,9 @@ pub struct Compiler<'source> {
     pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, FunctionId>,
     function_arena: &'source Arena<Function>,
 
-    pub variable_resolution_map: HashMap<Name<'source>, GlobalId>,
+    pub global_resolution_map: HashMap<Name<'source>, GlobalId>,
     pub globals: Vec<(TypeId, Value)>,
+    pub global_is_constant: Vec<bool>,
 
     pub has_errors: Cell<bool>,
 
@@ -33,7 +34,7 @@ pub struct Compiler<'source> {
     reverse_type_resolution_map: HashMap<*mut Type, &'source str>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     None,
     Integer(i64),
@@ -389,8 +390,9 @@ impl<'source> Compiler<'source> {
             name_resolution_map: HashMap::with_capacity(128),
             signature_resolution_map: HashMap::with_capacity(32),
             function_arena,
-            variable_resolution_map: HashMap::with_capacity(8),
+            global_resolution_map: HashMap::with_capacity(8),
             globals: Vec::with_capacity(8),
+            global_is_constant: Vec::with_capacity(8),
             has_errors: Cell::new(false),
             expression_spans: HashMap::with_capacity(1024),
             type_spans: HashMap::with_capacity(64),
@@ -505,9 +507,10 @@ impl<'source> Compiler<'source> {
         this
     }
 
-    fn new_global(&mut self, typ: TypeId, value: Value) -> GlobalId {
+    fn new_global(&mut self, typ: TypeId, value: Value, is_constant: bool) -> GlobalId {
         let id = self.globals.len();
         self.globals.push((typ, value));
+        self.global_is_constant.push(is_constant);
         id
     }
 
@@ -957,9 +960,28 @@ impl<'source> Compiler<'source> {
                 self.reverse_type_resolution_map.insert(type_id.0, name);
                 FrontendDirective::None
             },
-            Definition::Variable(..) | Definition::Function(..) | Definition::Extern(..) => FrontendDirective::None,
+            Definition::Variable(..) | Definition::Constant(..) | Definition::Function(..) | Definition::Extern(..) => FrontendDirective::None,
             Definition::Import(ref path) => FrontendDirective::Import(&**path),
             Definition::Library(ref path) => FrontendDirective::Library(&**path),
+        }
+    }
+
+    fn make_value(&mut self, expression: &'source Expression<'source>) -> Value {
+        let expression_span = self.expression_span(expression);
+
+        match *expression {
+            Expression::Integer(i, _) => Value::Integer(i as i64),
+            Expression::Negate(ref subexpression) => match **subexpression {
+                Expression::Integer(i, _) => Value::Integer(-(i as i64)),
+                _ => {
+                    self.report_error(Error::InvalidConstantExpression(expression_span));
+                    Value::Error
+                },
+            },
+            _ => {
+                self.report_error(Error::InvalidConstantExpression(expression_span));
+                Value::Error
+            },
         }
     }
 
@@ -1001,30 +1023,30 @@ impl<'source> Compiler<'source> {
 
                 if let Some(value_expression) = value_expression_option.as_ref() {
                     let expression_span = self.expression_span(value_expression);
-                    value = match **value_expression {
-                        Expression::Integer(i, _) => Value::Integer(i as i64),
-                        Expression::Negate(ref subexpression) => match **subexpression {
-                            Expression::Integer(i, _) => Value::Integer(-(i as i64)),
-                            _ => {
-                                self.report_error(Error::InvalidConstantExpression(expression_span));
-                                Value::Error
-                            },
-                        },
-                        _ => {
-                            self.report_error(Error::InvalidConstantExpression(expression_span));
-                            Value::Error
-                        },
-                    };
-
+                    value = self.make_value(value_expression);
                     if !value.type_is_valid(self.get_type_info(typ)) {
                         self.report_error(Error::InvalidType { span: expression_span, typ });
                         value = Value::Error;
                     }
                 }
 
-                let global_id = self.new_global(typ, value);
+                let global_id = self.new_global(typ, value, false);
 
-                self.variable_resolution_map.insert(name.clone(), global_id);
+                self.global_resolution_map.insert(name.clone(), global_id);
+            },
+            Definition::Constant(ref name, ref type_expression, ref value_expression) => {
+                let typ = self.resolve_type(type_expression);
+
+                let expression_span = self.expression_span(value_expression);
+                let mut value = self.make_value(value_expression);
+                if !value.type_is_valid(self.get_type_info(typ)) {
+                    self.report_error(Error::InvalidType { span: expression_span, typ });
+                    value = Value::Error;
+                }
+
+                let global_id = self.new_global(typ, value, true);
+
+                self.global_resolution_map.insert(name.clone(), global_id);
             },
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
