@@ -7,6 +7,7 @@ use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, 
 #[derive(Debug)]
 pub enum Instruction<'source> {
     Integer(VariableId, i64),
+    Float(VariableId, f64),
     Null(VariableId),
     Bool(VariableId, bool),
     String(VariableId, Box<[u8]>),
@@ -570,6 +571,17 @@ impl<'source> IrGenerator<'source> {
                 };
                 let variable = self.new_variable(Variable { typ, is_temporary: true });
                 self.instructions().push(Instruction::Integer(variable, i as i64));
+                variable
+            },
+            Expression::Float(f, size) => {
+                let typ = match size {
+                    Some(32) => self.compiler.type_primitive(PrimitiveType::Float32),
+                    Some(64) => self.compiler.type_primitive(PrimitiveType::Float64),
+                    Some(_) => unreachable!(),
+                    None => self.compiler.type_primitive(PrimitiveType::Float64),
+                };
+                let variable = self.new_variable(Variable { typ, is_temporary: true });
+                self.instructions().push(Instruction::Float(variable, f));
                 variable
             },
             Expression::Null => {
@@ -1144,6 +1156,7 @@ impl<'source> fmt::Display for IrGenerator<'source> {
 
                 match *instruction {
                     Instruction::Integer(destination, value) => write!(f, "%{} = {}", destination, value)?,
+                    Instruction::Float(destination, value) => write!(f, "%{} = {}", destination, value)?,
                     Instruction::Null(destination) => write!(f, "%{} = null", destination)?,
                     Instruction::Bool(destination, is_true) => write!(f, "%{} = {:?}", destination, is_true)?,
                     Instruction::String(destination, ref bytes) => write!(f, "%{} = {:?}", destination, String::from_utf8_lossy(bytes))?,

@@ -51,6 +51,8 @@ pub enum Type {
     Natural16,
     Natural32,
     Natural64,
+    Float32,
+    Float64,
     Offset,
     Size,
     /// This is an internal type used to resolve integer literal types in function calls.  See
@@ -214,6 +216,8 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Natural64 => "nat64",
             Type::Size => "size",
             Type::Offset => "offset",
+            Type::Float32 => "float32",
+            Type::Float64 => "float64",
             Type::GenericInteger => "<integer>",
             Type::Generic => "<unknown>",
             Type::Bool => "bool",
@@ -348,6 +352,8 @@ pub enum PrimitiveType {
     String,
     Size,
     Offset,
+    Float32,
+    Float64,
     NumberOfPrimitives,
 }
 
@@ -380,6 +386,8 @@ impl<'source> Compiler<'source> {
                 13 => Type::String,
                 14 => Type::Size,
                 15 => Type::Offset,
+                16 => Type::Float32,
+                17 => Type::Float64,
                 _ => unreachable!(),
             };
             let pointer = type_arena.alloc(type_info);
@@ -428,6 +436,8 @@ impl<'source> Compiler<'source> {
                 PrimitiveType::Natural64,
                 PrimitiveType::Size,
                 PrimitiveType::Offset,
+                PrimitiveType::Float32,
+                PrimitiveType::Float64,
             ] {
                 let typ = this.type_primitive(primitive);
                 let arguments = vec![typ, typ];
@@ -467,6 +477,8 @@ impl<'source> Compiler<'source> {
                 PrimitiveType::Offset,
                 PrimitiveType::Bool,
                 PrimitiveType::Null,
+                PrimitiveType::Float32,
+                PrimitiveType::Float64,
             ] {
                 let typ = this.type_primitive(primitive);
                 let arguments = vec![typ, typ];
@@ -619,6 +631,13 @@ impl<'source> Compiler<'source> {
         }
     }
 
+    pub fn type_is_float(&self, typ: TypeId) -> bool {
+        match *self.get_type_info(typ) {
+            Type::Float32 | Type::Float64 => true,
+            _ => false,
+        }
+    }
+
     pub fn can_autocast(&self, from: TypeId, to: TypeId) -> Option<CastType> {
         if self.types_match(from, to) {
             return Some(CastType::None)
@@ -707,6 +726,8 @@ impl<'source> Compiler<'source> {
             (&Type::Natural64, &Type::Natural64) => true,
             (&Type::Size, &Type::Size) => true,
             (&Type::Offset, &Type::Offset) => true,
+            (&Type::Float32, &Type::Float32) => true,
+            (&Type::Float64, &Type::Float64) => true,
             (&Type::GenericInteger, &Type::GenericInteger) => true,
             (&Type::Generic, &Type::Generic) => true,
             (&Type::Bool, &Type::Bool) => true,
@@ -917,6 +938,8 @@ impl<'source> Compiler<'source> {
             parse::Type::Name("nat64") => self.type_primitive(PrimitiveType::Natural64),
             parse::Type::Name("size") => self.type_primitive(PrimitiveType::Size),
             parse::Type::Name("offset") => self.type_primitive(PrimitiveType::Offset),
+            parse::Type::Name("float32") => self.type_primitive(PrimitiveType::Float32),
+            parse::Type::Name("float64") => self.type_primitive(PrimitiveType::Float64),
             parse::Type::Name("bool")  => self.type_primitive(PrimitiveType::Bool),
             parse::Type::Name("string")  => self.type_primitive(PrimitiveType::String),
             parse::Type::Name(name) => {

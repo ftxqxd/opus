@@ -73,6 +73,8 @@ impl<'source> LlvmBackend<'source> {
                 Type::Natural64 | Type::Integer64 => LLVMInt64TypeInContext(self.context),
                 Type::Size | Type::Offset => LLVMInt64TypeInContext(self.context), // FIXME: should be target-dependent
                 Type::Generic | Type::GenericInteger => unreachable!(),
+                Type::Float32 => LLVMFloatTypeInContext(self.context),
+                Type::Float64 => LLVMDoubleTypeInContext(self.context),
                 Type::Null => self.null_type,
                 Type::Bool => LLVMInt1TypeInContext(self.context),
                 Type::String => self.string_type,
@@ -179,6 +181,8 @@ impl<'source> LlvmBackend<'source> {
             Type::Natural64 => "nat64".into(),
             Type::Size => "size".into(),
             Type::Offset => "offset".into(),
+            Type::Float32 => "float32".into(),
+            Type::Float64 => "float64".into(),
             Type::GenericInteger | Type::Generic => unreachable!(),
             Type::Null => "null".into(),
             Type::Bool => "bool".into(),
@@ -423,6 +427,10 @@ impl<'source> FunctionTranslator<'source> {
                     let constant = LLVMConstInt(self.variable_types[destination], constant as _, signed as _);
                     self.variables[destination] = constant;
                 },
+                Instruction::Float(destination, constant) => {
+                    let constant = LLVMConstReal(self.variable_types[destination], constant as _);
+                    self.variables[destination] = constant;
+                },
                 Instruction::Null(destination) => {
                     let mut vals = vec![];
                     let constant = LLVMConstStruct(vals.as_mut_ptr(), vals.len() as _, 0);
@@ -504,54 +512,82 @@ impl<'source> FunctionTranslator<'source> {
                 },
 
                 Instruction::Add(destination, variable1, variable2) => {
-                    self.variables[destination] = LLVMBuildAdd(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFAdd(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else {
+                        self.variables[destination] = LLVMBuildAdd(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    }
                 },
                 Instruction::Subtract(destination, variable1, variable2) => {
-                    self.variables[destination] = LLVMBuildSub(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFSub(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else {
+                        self.variables[destination] = LLVMBuildSub(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    }
                 },
                 Instruction::Multiply(destination, variable1, variable2) => {
-                    self.variables[destination] = LLVMBuildMul(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFMul(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else {
+                        self.variables[destination] = LLVMBuildMul(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    }
                 },
                 Instruction::Divide(destination, variable1, variable2) => {
-                    if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFDiv(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
                         self.variables[destination] = LLVMBuildSDiv(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     } else {
                         self.variables[destination] = LLVMBuildUDiv(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     }
                 },
                 Instruction::Modulo(destination, variable1, variable2) => {
-                    if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFRem(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
                         self.variables[destination] = LLVMBuildSRem(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     } else {
                         self.variables[destination] = LLVMBuildURem(self.backend.builder, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     }
                 },
                 Instruction::Equals(destination, variable1, variable2) => {
-                    self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntEQ, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFCmp(self.backend.builder, LLVMRealPredicate::LLVMRealOEQ, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else {
+                        self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntEQ, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    }
                 },
                 Instruction::LessThan(destination, variable1, variable2) => {
-                    if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFCmp(self.backend.builder, LLVMRealPredicate::LLVMRealOLT, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntSLT, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     } else {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntULT, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     }
                 },
                 Instruction::GreaterThan(destination, variable1, variable2) => {
-                    if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFCmp(self.backend.builder, LLVMRealPredicate::LLVMRealOGT, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntSGT, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     } else {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntUGT, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     }
                 },
                 Instruction::LessThanEquals(destination, variable1, variable2) => {
-                    if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFCmp(self.backend.builder, LLVMRealPredicate::LLVMRealOLE, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntSLE, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     } else {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntULE, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     }
                 },
                 Instruction::GreaterThanEquals(destination, variable1, variable2) => {
-                    if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
+                    if self.backend.compiler.type_is_float(self.ir.variables[variable1].typ) {
+                        self.variables[destination] = LLVMBuildFCmp(self.backend.builder, LLVMRealPredicate::LLVMRealOGE, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
+                    } else if self.ir.compiler.type_is_signed(self.ir.variables[variable1].typ) {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntSGE, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);
                     } else {
                         self.variables[destination] = LLVMBuildICmp(self.backend.builder, LLVMIntPredicate::LLVMIntUGE, self.variables[variable1], self.variables[variable2], b"\0".as_ptr() as *const _);

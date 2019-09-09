@@ -29,6 +29,7 @@ pub enum Token<'source> {
     Dot,
     QuestionMark,
     Integer(u64, Option<(bool, u8)>),
+    Float(f64, Option<u8>),
     String(Box<[u8]>),
     LowercaseIdentifier(&'source str),
     UppercaseIdentifier(&'source str),
@@ -104,6 +105,14 @@ impl<'source> fmt::Display for Token<'source> {
                 } else {
                     buffer = format!("{}{}{}", value, if is_signed { "i" } else { "n" }, size);
                 }
+                &buffer
+            },
+            Float(value, None) => {
+                buffer = format!("{}", value);
+                &buffer
+            },
+            Float(value, Some(size)) => {
+                buffer = format!("{}f{}", value, size);
                 &buffer
             },
             String(ref bytes) => {
@@ -245,6 +254,7 @@ impl Operator {
 #[derive(Debug, PartialEq)]
 pub enum Expression<'source> {
     Integer(u64, Option<(bool, u8)>),
+    Float(f64, Option<u8>),
     Null,
     Bool(bool),
     String(Box<[u8]>),
@@ -598,47 +608,78 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     i *= 10;
                     i += c as u64 - '0' as u64;
                 }
-                // look for type suffix
-                let mut signed = true;
-                let size = match self.peek() {
-                    Some('s') => { signed = false; Some(0) },
-                    Some('o') => { signed = true; Some(0) },
-                    Some(c @ 'i') | Some(c @ 'n') => {
-                        signed = c == 'i';
-
+                // look for decimal point
+                if let Some('.') = self.peek() {
+                    self.advance();
+                    while let Some('0' ..= '9') = self.peek() {
                         self.advance();
-                        let old_position = self.real_position;
-                        Some(match (self.advance(), self.peek()) {
-                            (Some('8'), _) => 8,
-                            (Some('1'), Some('6')) => {
-                                self.advance();
-                                16
-                            },
-                            (Some('3'), Some('2')) => {
-                                self.advance();
-                                32
-                            },
-                            (Some('6'), Some('4')) => {
-                                self.advance();
-                                64
-                            },
-                            (Some(a @ '0'..= '9'), Some(b @ '0'..= '9')) => {
-                                self.advance();
-                                let size = (a as u32 - '0' as u32) * 10 + b as u32 - '0' as u32;
-                                let span = &self.source[old_position..self.real_position];
-                                return Err(Error::InvalidNumericSize(span, size))
-                            },
-                            (Some(a @ '0'..= '9'), _) => {
-                                let size = a as u32 - '0' as u32;
-                                let span = &self.source[old_position..self.real_position];
-                                return Err(Error::InvalidNumericSize(span, size))
-                            },
-                            _ => { self.real_position = old_position; self.position = old_position; 32 },
-                        })
-                    },
-                    _ => None,
-                };
-                Ok(Token::Integer(i, size.map(|size| (signed, size))))
+                    }
+                    let f: f64 = self.source[old_position..self.real_position].parse().unwrap();
+                    let size = match self.peek() {
+                        Some('f') => {
+                            self.advance();
+                            match (self.advance(), self.advance()) {
+                                (Some('3'), Some('2')) => Some(32),
+                                (Some('6'), Some('4')) => Some(64),
+                                (Some(a), None) => {
+                                    let size = a as u32 - '0' as u32;
+                                    let span = &self.source[old_position..self.real_position];
+                                    return Err(Error::InvalidNumericSize(span, size))
+                                },
+                                (Some(a), Some(b)) => {
+                                    let size = (a as u32 - '0' as u32)*10 + (b as u32 - '0' as u32);
+                                    let span = &self.source[old_position..self.real_position];
+                                    return Err(Error::InvalidNumericSize(span, size))
+                                },
+                                _ => { self.real_position = old_position; self.position = old_position; None },
+                            }
+                        },
+                        _ => None,
+                    };
+                    Ok(Token::Float(f, size))
+                } else {
+                    // look for type suffix
+                    let mut signed = true;
+                    let size = match self.peek() {
+                        Some('s') => { signed = false; Some(0) },
+                        Some('o') => { signed = true; Some(0) },
+                        Some(c @ 'i') | Some(c @ 'n') => {
+                            signed = c == 'i';
+
+                            self.advance();
+                            let old_position = self.real_position;
+                            Some(match (self.advance(), self.peek()) {
+                                (Some('8'), _) => 8,
+                                (Some('1'), Some('6')) => {
+                                    self.advance();
+                                    16
+                                },
+                                (Some('3'), Some('2')) => {
+                                    self.advance();
+                                    32
+                                },
+                                (Some('6'), Some('4')) => {
+                                    self.advance();
+                                    64
+                                },
+                                (Some(a @ '0'..= '9'), Some(b @ '0'..= '9')) => {
+                                    self.advance();
+                                    let size = (a as u32 - '0' as u32) * 10 + b as u32 - '0' as u32;
+                                    let span = &self.source[old_position..self.real_position];
+                                    return Err(Error::InvalidNumericSize(span, size))
+                                },
+                                (Some(a @ '0'..= '9'), _) => {
+                                    let size = a as u32 - '0' as u32;
+                                    let span = &self.source[old_position..self.real_position];
+                                    return Err(Error::InvalidNumericSize(span, size))
+                                },
+                                _ => { self.real_position = old_position; self.position = old_position; 32 },
+                            })
+                        },
+                        _ => None,
+                    };
+                    Ok(Token::Integer(i, size.map(|size| (signed, size))))
+                }
             },
             Some(c @ 'A'..= 'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
@@ -975,6 +1016,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let expression = match token {
             Token::Integer(i, meta) => {
                 Expression::Integer(i, meta)
+            },
+            Token::Float(i, size) => {
+                Expression::Float(i, size)
             },
             Token::String(bytes) => {
                 Expression::String(bytes)
