@@ -684,7 +684,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some(c @ 'A'..= 'Z') | Some(c @ '\'') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() || c == '\'' || c == '_' {
+                    if c.is_alphanumeric() || c == '\'' || c == '_' || c == '-' {
                         byte_len += c.len_utf8();
                         self.advance();
                     } else {

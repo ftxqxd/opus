@@ -144,7 +144,15 @@ impl<'source> LlvmBackend<'source> {
 
     fn mangle_function_name(&self, function: &Function) -> CString {
         if function.is_extern {
-            CString::new(format!("{}", &function.name[0].as_ref().unwrap()[1..])).unwrap()
+            let mut out = String::new();
+            for character in function.name[0].as_ref().unwrap()[1..].chars() {
+                if character == '-' {
+                    out.push('_');
+                } else {
+                    out.push(character);
+                }
+            }
+            CString::new(out).unwrap()
         } else {
             let mut output = String::new();
             output += "_opus";
