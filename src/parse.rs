@@ -31,8 +31,7 @@ pub enum Token<'source> {
     Integer(u64, Option<(bool, u8)>),
     Float(f64, Option<u8>),
     String(Box<[u8]>),
-    LowercaseIdentifier(&'source str),
-    UppercaseIdentifier(&'source str),
+    Identifier(&'source str),
     Indent,
     Dedent,
     Var,
@@ -119,8 +118,7 @@ impl<'source> fmt::Display for Token<'source> {
                 buffer = format!("{}", std::string::String::from_utf8_lossy(bytes));
                 &buffer
             },
-            LowercaseIdentifier(s) => s,
-            UppercaseIdentifier(s) => s,
+            Identifier(s) => s,
             Indent => "<indent>",
             Dedent => "<dedent>",
             Var => "var",
@@ -348,7 +346,7 @@ pub enum Error<'source> {
     InvalidEscapeSequence(&'source str),
     UnexpectedToken(&'source str, Token<'source>),
     ExpectedFoundToken { span: &'source str, expected: Token<'source>, found: Token<'source> },
-    ExpectedLowercaseIdentifier(&'source str, Token<'source>),
+    ExpectedIdentifier(&'source str, Token<'source>),
     InvalidNumericSize(&'source str, u32),
 }
 
@@ -623,22 +621,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     Ok(Token::Integer(i, size.map(|size| (signed, size))))
                 }
             },
-            Some(c @ 'A'..= 'Z') | Some(c @ '\'') => {
+            Some(c @ 'a'..= 'z') | Some(c @ '_') | Some(c @ 'A' ..= 'Z') => {
                 let mut byte_len = c.len_utf8();
                 while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() || c == '\'' || c == '_' || c == '-' {
-                        byte_len += c.len_utf8();
-                        self.advance();
-                    } else {
-                        break;
-                    }
-                }
-                Ok(Token::UppercaseIdentifier(&self.source[old_position..old_position + byte_len]))
-            },
-            Some(c @ 'a'..= 'z') | Some(c @ '_') => {
-                let mut byte_len = c.len_utf8();
-                while let Some(c) = self.peek() {
-                    if c.is_alphanumeric() || c == '\'' || c == '_' {
+                    if c.is_alphanumeric() || c == '_' {
                         byte_len += c.len_utf8();
                         self.advance();
                     } else {
@@ -676,7 +662,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "import" => Ok(Token::Import),
                     "library" => Ok(Token::Library),
                     "proc" => Ok(Token::Proc),
-                    _ => Ok(Token::LowercaseIdentifier(identifier)),
+                    _ => Ok(Token::Identifier(identifier)),
                 }
             },
             Some('"') => {
@@ -768,12 +754,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         }
     }
 
-    fn parse_lowercase_identifier(&mut self) -> Result<'source, &'source str> {
+    fn parse_identifier(&mut self) -> Result<'source, &'source str> {
         match self.parse_token()? {
-            Token::LowercaseIdentifier(s) => Ok(s),
+            Token::Identifier(s) => Ok(s),
             t => {
                 let span = &self.source[self.token_low..self.position];
-                Err(Error::ExpectedLowercaseIdentifier(span, t))
+                Err(Error::ExpectedIdentifier(span, t))
             },
         }
     }
@@ -851,7 +837,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let low = self.token_low;
 
         let typ = match token {
-            Token::LowercaseIdentifier(s) => Type::Name(s),
+            Token::Identifier(s) => Type::Name(s),
             Token::Null => Type::Null,
             Token::Ref => {
                 let subtype = self.parse_type()?;
@@ -894,7 +880,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         let _ = self.parse_token();
                         break
                     }
-                    let field_name = self.parse_lowercase_identifier()?;
+                    let field_name = self.parse_identifier()?;
                     self.expect(&Token::Colon)?;
                     let field_type = self.parse_type()?;
                     fields.push((field_name, field_type));
@@ -936,7 +922,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::String(bytes) => {
                 Expression::String(bytes)
             },
-            Token::LowercaseIdentifier(s) => Expression::Variable(s),
+            Token::Identifier(s) => Expression::Variable(s),
             Token::LeftParenthesis => {
                 self.ignore_dents += 1;
                 let inner = self.parse_expression()?;
@@ -965,7 +951,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Expression::MutableArrayReference(subexpression)
             },
             Token::Var => {
-                let variable_name = self.parse_lowercase_identifier()?;
+                let variable_name = self.parse_identifier()?;
                 self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 Expression::VariableDefinition(variable_name, type_expression)
@@ -1000,7 +986,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Expression::Alignof(typ)
             },
             Token::Record => {
-                let name = self.parse_lowercase_identifier()?;
+                let name = self.parse_identifier()?;
                 let type_box = Box::new(Type::Name(name));
                 self.compiler.type_spans.insert(&*type_box, &self.source[low..self.position]);
 
@@ -1010,7 +996,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let mut fields = vec![];
                 loop {
                     match self.parse_token()? {
-                        Token::LowercaseIdentifier(field_name) => {
+                        Token::Identifier(field_name) => {
                             self.expect(&Token::ColonEquals)?;
                             let value = self.parse_expression()?;
                             fields.push((field_name, value));
@@ -1042,7 +1028,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 },
                 Token::Dot => {
                     let _ = self.parse_token();
-                    let field_name = self.parse_lowercase_identifier()?;
+                    let field_name = self.parse_identifier()?;
                     expression_box = Box::new(Expression::Field(field_name, expression_box));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
@@ -1089,7 +1075,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let statement = match token {
             Token::Var => {
                 let _ = self.parse_token();
-                let variable_name = self.parse_lowercase_identifier()?;
+                let variable_name = self.parse_identifier()?;
                 match self.peek_token()? {
                     Token::Colon => {
                         let _ = self.parse_token();
@@ -1144,7 +1130,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::For => {
                 let _ = self.parse_token();
-                let name = self.parse_lowercase_identifier()?;
+                let name = self.parse_identifier()?;
 
                 let type_option = match self.peek_token()? {
                     Token::Colon => {
@@ -1237,7 +1223,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::Var => {
                 let _ = self.parse_token();
-                let variable_name = self.parse_lowercase_identifier()?;
+                let variable_name = self.parse_identifier()?;
                 self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 let value_option = match self.peek_token()? {
@@ -1253,7 +1239,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::Const => {
                 let _ = self.parse_token();
-                let variable_name = self.parse_lowercase_identifier()?;
+                let variable_name = self.parse_identifier()?;
                 self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 self.expect(&Token::ColonEquals)?;
@@ -1264,7 +1250,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::Type => {
                 let _ = self.parse_token();
-                let name = self.parse_lowercase_identifier()?;
+                let name = self.parse_identifier()?;
                 self.expect(&Token::ColonEquals)?;
                 let typ = self.parse_type()?;
                 span = &self.source[low..self.position];
@@ -1302,7 +1288,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     }
 
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
-        let name = self.parse_lowercase_identifier()?;
+        let name = self.parse_identifier()?;
         let mut arguments = vec![];
         self.expect(&Token::LeftSquareBracket)?;
 
@@ -1314,7 +1300,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     break
                 },
                 _ => {
-                    let name2 = self.parse_lowercase_identifier()?;
+                    let name2 = self.parse_identifier()?;
                     self.expect(&Token::Colon)?;
                     let typ = self.parse_type()?;
                     arguments.push((name2, typ));

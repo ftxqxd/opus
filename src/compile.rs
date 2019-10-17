@@ -147,7 +147,6 @@ pub enum Error<'source> {
     CallOfNonFunction(&'source str, TypeId),
     AttemptToCallOrIndexConstant(&'source str),
     InvalidNumberOfArgs(&'source str),
-    ReferenceToBuiltinFunction(&'source str),
     InvalidConstantExpression(&'source str),
 }
 
@@ -805,7 +804,7 @@ impl<'source> Compiler<'source> {
                 eprintln!("unexpected token: expected {}, found {}", expected, found);
                 print_span(&self, span);
             },
-            ParseError(ExpectedLowercaseIdentifier(span, ref token)) => {
+            ParseError(ExpectedIdentifier(span, ref token)) => {
                 eprintln!("unexpected token: expected name, found {}", token);
                 print_span(&self, span);
             },
@@ -903,10 +902,6 @@ impl<'source> Compiler<'source> {
             },
             InvalidNumberOfArgs(span) => {
                 eprintln!("invalid number of indices");
-                print_span(&self, span);
-            },
-            ReferenceToBuiltinFunction(span) => {
-                eprintln!("reference to built-in function");
                 print_span(&self, span);
             },
             InvalidConstantExpression(span) => {
