@@ -3,15 +3,15 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use typed_arena::Arena;
-use crate::parse::{self, FunctionSignature, FunctionName, Definition, Expression, Statement, Operator, Name};
+use crate::parse::{self, FunctionSignature, Definition, Expression, Statement, Operator};
 use crate::frontend::Options;
 
 pub struct Compiler<'source> {
-    pub name_resolution_map: HashMap<Box<FunctionName<'source>>, Vec<FunctionId>>,
+    pub name_resolution_map: HashMap<&'source str, Vec<FunctionId>>,
     pub signature_resolution_map: HashMap<*const FunctionSignature<'source>, FunctionId>,
     function_arena: &'source Arena<Function>,
 
-    pub global_resolution_map: HashMap<Name<'source>, GlobalId>,
+    pub global_resolution_map: HashMap<&'source str, GlobalId>,
     pub globals: Vec<(TypeId, Value)>,
     pub global_is_constant: Vec<bool>,
 
@@ -104,7 +104,7 @@ pub enum PointerType {
 
 #[derive(Debug)]
 pub struct Function {
-    pub name: Box<[Option<Box<str>>]>,
+    pub name: Box<str>,
     pub arguments: Box<[TypeId]>,
     pub return_type: TypeId,
     pub is_extern: bool,
@@ -117,7 +117,7 @@ pub struct Function {
 /// This is used for error messages.
 #[derive(Debug, Clone)]
 pub struct FunctionIdentifier {
-    pub name: Box<[Option<Box<str>>]>,
+    pub name: Box<str>,
     pub arguments: Box<[TypeId]>,
 }
 
@@ -125,10 +125,11 @@ pub struct FunctionIdentifier {
 pub enum Error<'source> {
     ParseError(crate::parse::Error<'source>),
     UndefinedVariable(&'source str),
-    ShadowedName(&'source str, Name<'source>),
+    ShadowedName(&'source str, &'source str),
     UndefinedFunction(&'source str, FunctionIdentifier),
     NoOverloadForFunction(&'source str, FunctionIdentifier),
     AmbiguousOverload(&'source str, FunctionIdentifier),
+    AmbiguousFunctionReference(&'source str),
     UnexpectedType { span: &'source str, expected: TypeId, found: TypeId },
     InvalidType { span: &'source str, typ: TypeId },
     InvalidOperandType { span: &'source str, typ: TypeId },
@@ -140,11 +141,12 @@ pub enum Error<'source> {
     ImmutableLvalue(&'source str),
     ArrayPointerToNonArray(&'source str),
     InvalidCast { span: &'source str, from: TypeId, to: TypeId },
-    InvalidExternFunctionName(&'source str, FunctionId),
     UndefinedType(&'source str),
     FieldAccessOnNonRecord(&'source str, TypeId),
     FieldDoesNotExist(&'source str, TypeId, &'source str),
     CallOfNonFunction(&'source str, TypeId),
+    AttemptToCallOrIndexConstant(&'source str),
+    InvalidNumberOfArgs(&'source str),
     ReferenceToBuiltinFunction(&'source str),
     InvalidConstantExpression(&'source str),
 }
@@ -248,7 +250,7 @@ impl<'source> fmt::Display for TypePrinter<'source> {
                 ""
             },
             Type::Function { ref argument_types, return_type } => {
-                write!(formatter, "proc (")?;
+                write!(formatter, "proc [")?;
                 let mut printed_anything = false;
                 for &argument_type in argument_types.iter() {
                     if printed_anything {
@@ -257,7 +259,7 @@ impl<'source> fmt::Display for TypePrinter<'source> {
                     printed_anything = true;
                     write!(formatter, "{}", TypePrinter(self.0, argument_type))?;
                 }
-                write!(formatter, ") {}", TypePrinter(self.0, return_type))?;
+                write!(formatter, "] {}", TypePrinter(self.0, return_type))?;
                 ""
             },
             Type::Array(size, subtype) => {
@@ -277,29 +279,21 @@ impl<'source> fmt::Display for FunctionPrinter<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         let function = self.0.get_function_info(self.1);
 
-        write!(formatter, "(")?;
-
-        let mut i = 0;
+        write!(formatter, "{}[", function.name)?;
 
         let mut written_anything = false;
 
-        for part in function.name.iter() {
+        for &argument in function.arguments.iter() {
             if written_anything {
                 write!(formatter, " ")?;
             }
 
-            match *part {
-                Some(ref x) => write!(formatter, "{}", x)?,
-                None => {
-                    write!(formatter, ":{}", TypePrinter(self.0, function.arguments[i]))?;
-                    i += 1;
-                },
-            }
+            write!(formatter, ":{}", TypePrinter(self.0, argument))?;
 
             written_anything = true;
         }
 
-        write!(formatter, "): {}", TypePrinter(self.0, function.return_type))
+        write!(formatter, "]: {}", TypePrinter(self.0, function.return_type))
     }
 }
 
@@ -307,29 +301,21 @@ pub struct FunctionIdentifierPrinter<'source>(&'source Compiler<'source>, &'sour
 
 impl<'source> fmt::Display for FunctionIdentifierPrinter<'source> {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        write!(formatter, "(")?;
-
-        let mut i = 0;
+        write!(formatter, "{}[", self.1.name)?;
 
         let mut written_anything = false;
 
-        for part in self.1.name.iter() {
+        for &argument in self.1.arguments.iter() {
             if written_anything {
                 write!(formatter, " ")?;
             }
 
-            match *part {
-                Some(ref x) => write!(formatter, "{}", x)?,
-                None => {
-                    write!(formatter, ":{}", TypePrinter(self.0, self.1.arguments[i]))?;
-                    i += 1;
-                },
-            }
+            write!(formatter, ":{}", TypePrinter(self.0, argument))?;
 
             written_anything = true;
         }
 
-        write!(formatter, ")")
+        write!(formatter, "]")
     }
 }
 
@@ -424,7 +410,6 @@ impl<'source> Compiler<'source> {
         ] {
             let mut overloads = Vec::with_capacity(8);
             let operator_name = operator.symbol();
-            let name: Box<[_]> = Box::new([None, Some(operator_name), None]);
             for &primitive in &[
                 PrimitiveType::Integer8,
                 PrimitiveType::Integer16,
@@ -442,7 +427,7 @@ impl<'source> Compiler<'source> {
                 let typ = this.type_primitive(primitive);
                 let arguments = vec![typ, typ];
                 let function = Function {
-                    name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+                    name: operator_name.into(),
                     arguments: arguments.into(),
                     return_type: typ,
                     is_extern: false,
@@ -451,7 +436,7 @@ impl<'source> Compiler<'source> {
                 };
                 overloads.push(this.new_function_id(function));
             }
-            this.name_resolution_map.insert(name, overloads);
+            this.name_resolution_map.insert(operator_name, overloads);
         }
 
         for &operator in &[
@@ -463,7 +448,6 @@ impl<'source> Compiler<'source> {
         ] {
             let mut overloads = Vec::with_capacity(8);
             let operator_name = operator.symbol();
-            let name: Box<[_]> = Box::new([None, Some(operator_name), None]);
             for &primitive in &[
                 PrimitiveType::Integer8,
                 PrimitiveType::Integer16,
@@ -483,7 +467,7 @@ impl<'source> Compiler<'source> {
                 let typ = this.type_primitive(primitive);
                 let arguments = vec![typ, typ];
                 let function = Function {
-                    name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+                    name: operator_name.into(),
                     arguments: arguments.into(),
                     return_type: this.type_bool(),
                     is_extern: false,
@@ -492,7 +476,7 @@ impl<'source> Compiler<'source> {
                 };
                 overloads.push(this.new_function_id(function));
             }
-            this.name_resolution_map.insert(name, overloads);
+            this.name_resolution_map.insert(operator_name, overloads);
         }
 
         for &operator in &[
@@ -500,12 +484,11 @@ impl<'source> Compiler<'source> {
         ] {
             let mut overloads = Vec::with_capacity(1);
             let operator_name = operator.symbol();
-            let name: Box<[_]> = Box::new([Some(operator_name), None]);
             let primitive = PrimitiveType::Bool;
             let typ = this.type_primitive(primitive);
             let arguments = vec![typ];
             let function = Function {
-                name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+                name: operator_name.into(),
                 arguments: arguments.into(),
                 return_type: this.type_bool(),
                 is_extern: false,
@@ -513,7 +496,7 @@ impl<'source> Compiler<'source> {
                 id: FunctionId::null(),
             };
             overloads.push(this.new_function_id(function));
-            this.name_resolution_map.insert(name, overloads);
+            this.name_resolution_map.insert(operator_name, overloads);
         }
 
         this
@@ -850,6 +833,10 @@ impl<'source> Compiler<'source> {
                 eprintln!("call to overloaded function is ambiguous: {}", FunctionIdentifierPrinter(self, identifier));
                 print_span(&self, span);
             },
+            AmbiguousFunctionReference(span) => {
+                eprintln!("reference to overloaded function is ambiguous");
+                print_span(&self, span);
+            },
             UnexpectedType { span, expected, found } => {
                 eprintln!("invalid type: expected {}, found {}", TypePrinter(self, expected), TypePrinter(self, found));
                 print_span(&self, span);
@@ -894,10 +881,6 @@ impl<'source> Compiler<'source> {
                 eprintln!("invalid cast: {} to {}", TypePrinter(self, from), TypePrinter(self, to));
                 print_span(&self, span);
             },
-            InvalidExternFunctionName(span, function) => {
-                eprintln!("invalid extern function signature: {}", FunctionPrinter(self, function));
-                print_span(&self, span);
-            },
             UndefinedType(span) => {
                 eprintln!("undefined type: {}", span);
                 print_span(&self, span);
@@ -912,6 +895,14 @@ impl<'source> Compiler<'source> {
             },
             CallOfNonFunction(span, typ) => {
                 eprintln!("cannot call value of type {}", TypePrinter(self, typ));
+                print_span(&self, span);
+            },
+            AttemptToCallOrIndexConstant(span) => {
+                eprintln!("attempt to call or index constant");
+                print_span(&self, span);
+            },
+            InvalidNumberOfArgs(span) => {
+                eprintln!("invalid number of indices");
                 print_span(&self, span);
             },
             ReferenceToBuiltinFunction(span) => {
@@ -1011,7 +1002,7 @@ impl<'source> Compiler<'source> {
     pub fn finalize_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
             Definition::Function(ref signature, ..) | Definition::Extern(ref signature) => {
-                let name: Box<_> = signature.name.iter().map(|part| part.map(|x| x.into())).collect();
+                let name: Box<str> = signature.name.into();
                 let arguments: Box<_> = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
                 let return_type = self.resolve_type(&signature.return_type);
 
@@ -1023,19 +1014,9 @@ impl<'source> Compiler<'source> {
 
                 let function = Function { name, arguments, return_type, is_extern, is_builtin: false, id: FunctionId::null() };
 
-                if is_extern
-                && (signature.name.len() == 0
-                    || !signature.name[1..].iter().all(|x| x.is_none())
-                    || signature.name[0].is_none()
-                    || signature.name[0].as_ref().unwrap().chars().next() != Some('\''))
-                {
-                    let span = self.definition_span(definition);
-                    self.report_error(Error::InvalidExternFunctionName(span, function.id));
-                }
-
                 let function_id = self.new_function_id(function);
 
-                self.name_resolution_map.entry(signature.name.clone())
+                self.name_resolution_map.entry(signature.name)
                     .and_modify(|v| v.push(function_id))
                     .or_insert_with(|| vec![function_id]);
                 self.signature_resolution_map.insert(signature, function_id);
@@ -1055,7 +1036,7 @@ impl<'source> Compiler<'source> {
 
                 let global_id = self.new_global(typ, value, false);
 
-                self.global_resolution_map.insert(name.clone(), global_id);
+                self.global_resolution_map.insert(name, global_id);
             },
             Definition::Constant(ref name, ref type_expression, ref value_expression) => {
                 let typ = self.resolve_type(type_expression);
@@ -1069,7 +1050,7 @@ impl<'source> Compiler<'source> {
 
                 let global_id = self.new_global(typ, value, true);
 
-                self.global_resolution_map.insert(name.clone(), global_id);
+                self.global_resolution_map.insert(name, global_id);
             },
             Definition::Type(name, ref type_expression) => {
                 let type_id = self.resolve_type(type_expression);
@@ -1099,18 +1080,20 @@ impl<'source> Compiler<'source> {
     ///    should be able to be ignored as far as the matching strategy is concerned.
     ///
     /// This function employs the obvious algorithm that satisfies the above properties.
-    pub fn lookup_function(&self, span: &'source str, name: &FunctionName<'source>, argument_types: &[TypeId]) -> Option<FunctionId> {
+    pub fn lookup_function(&self, span: &'source str, name: &'source str, argument_types: &[TypeId]) -> Option<FunctionId> {
         // FIXME(cleanup): this code isn't ideal and could probably be simplified & optimized
         let function_identifier = FunctionIdentifier {
-            name: name.iter().map(|x| x.map(|y| y.into())).collect(),
+            name: name.into(),
             arguments: argument_types.into(),
         };
 
-        if let Some(function_ids) = self.name_resolution_map.get::<Box<_>>(&name.into()) {
+        if let Some(function_ids) = self.name_resolution_map.get(&name) {
             let candidates: Box<[_]> = function_ids.iter()
                 .map(|&id| self.get_function_info(id))
                 // Can we autocast our parameters to match this function's types?
-                .filter(|function| argument_types.iter().zip(function.arguments.iter()).all(|(&x, &y)| self.can_autocast(x, y).is_some())).collect();
+                .filter(|function|
+                    function.arguments.len() == argument_types.len()
+                    && argument_types.iter().zip(function.arguments.iter()).all(|(&x, &y)| self.can_autocast(x, y).is_some())).collect();
 
             if candidates.len() == 0 {
                 self.report_error(Error::NoOverloadForFunction(span, function_identifier));
@@ -1165,9 +1148,5 @@ impl<'source> Compiler<'source> {
 
     pub fn type_span(&self, typ: &parse::Type<'source>) -> &'source str {
         self.type_spans[&(typ as *const _)]
-    }
-
-    pub fn definition_span(&self, definition: &Definition<'source>) -> &'source str {
-        self.definition_spans[&(definition as *const _)]
     }
 }

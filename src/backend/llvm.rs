@@ -145,7 +145,7 @@ impl<'source> LlvmBackend<'source> {
     fn mangle_function_name(&self, function: &Function) -> CString {
         if function.is_extern {
             let mut out = String::new();
-            for character in function.name[0].as_ref().unwrap()[1..].chars() {
+            for character in function.name.chars() {
                 if character == '-' {
                     out.push('_');
                 } else {
@@ -155,21 +155,12 @@ impl<'source> LlvmBackend<'source> {
             CString::new(out).unwrap()
         } else {
             let mut output = String::new();
-            output += "_opus";
+            output += "_opus_";
+            output += &*self.mangle_symbol(&function.name);
 
-            let mut i = 0;
-            for part in function.name.iter() {
-                match *part {
-                    Some(ref x) => {
-                        output += "_";
-                        output += &*self.mangle_symbol(x);
-                    },
-                    None => {
-                        output += "__";
-                        output += &*self.mangle_type_name(function.arguments[i]);
-                        i += 1;
-                    },
-                }
+            for &argument in function.arguments.iter() {
+                output += "__";
+                output += &*self.mangle_type_name(argument);
             }
 
             CString::new(output).unwrap()
@@ -335,9 +326,9 @@ impl<'source> Backend for LlvmBackend<'source> {
         let stdin = compiler_process.stdin.as_mut().expect("failed to open cc stdin");
         write!(stdin, r#"
             #include <inttypes.h>
-            int32_t _opus_Main(void);
+            int32_t _opus_main(void);
             int main(void) {{
-                return _opus_Main();
+                return _opus_main();
             }}
         "#)?;
 
