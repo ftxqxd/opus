@@ -587,10 +587,15 @@ impl<'source> IrGenerator<'source> {
                 let types: Vec<_> = type_expressions.iter().map(|e| self.compiler.resolve_type(e)).collect();
                 if let Some(function_id) = self.compiler.lookup_function(expression_span, name, &types) {
                     let function = self.compiler.get_function_info(function_id);
-                    let typ = self.compiler.type_function(function.arguments.clone(), function.return_type);
-                    let output_variable = self.new_variable(Variable { typ, is_temporary: true });
-                    self.instructions().push(Instruction::Function(output_variable, function_id));
-                    output_variable
+                    if function.is_builtin {
+                        self.compiler.report_error(Error::ReferenceToBuiltinFunction(expression_span));
+                        self.generate_error()
+                    } else {
+                        let typ = self.compiler.type_function(function.arguments.clone(), function.return_type);
+                        let output_variable = self.new_variable(Variable { typ, is_temporary: true });
+                        self.instructions().push(Instruction::Function(output_variable, function_id));
+                        output_variable
+                    }
                 } else {
                     self.generate_error()
                 }

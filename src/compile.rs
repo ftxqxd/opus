@@ -145,6 +145,7 @@ pub enum Error<'source> {
     FieldAccessOnNonRecord(&'source str, TypeId),
     FieldDoesNotExist(&'source str, TypeId, &'source str),
     CallOfNonFunction(&'source str, TypeId),
+    ReferenceToBuiltinFunction(&'source str),
     AttemptToCallOrIndexConstant(&'source str),
     InvalidNumberOfArgs(&'source str),
     InvalidConstantExpression(&'source str),
@@ -894,6 +895,10 @@ impl<'source> Compiler<'source> {
             },
             CallOfNonFunction(span, typ) => {
                 eprintln!("cannot call value of type {}", TypePrinter(self, typ));
+                print_span(&self, span);
+            },
+            ReferenceToBuiltinFunction(span) => {
+                eprintln!("refernce to built-in function");
                 print_span(&self, span);
             },
             AttemptToCallOrIndexConstant(span) => {
