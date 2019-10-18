@@ -260,6 +260,7 @@ pub enum Expression<'source> {
     String(Box<[u8]>),
     Variable(&'source str),
     VariableDefinition(&'source str, Box<Type<'source>>),
+    Proc(&'source str, Box<[Box<Type<'source>>]>),
     CallOrIndex(Box<Expression<'source>>, Box<[Box<Expression<'source>>]>),
     NamedCall(&'source str, Box<[Box<Expression<'source>>]>),
     Record(Box<Type<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
@@ -1040,6 +1041,23 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.ignore_dents -= 1;
                 Expression::Record(type_box, fields.into())
             },
+            Token::Proc => {
+                let name = self.parse_identifier()?;
+                self.expect(&Token::LeftSquareBracket)?;
+                let mut types = vec![];
+                loop {
+                    match self.peek_token()? {
+                        Token::RightSquareBracket => {
+                            let _ = self.parse_token();
+                            break
+                        },
+                        _ => {
+                            types.push(self.parse_type()?);
+                        },
+                    }
+                }
+                Expression::Proc(name, types.into())
+            },
             t => {
                 let span = &self.source[low..self.position];
                 return Err(Error::UnexpectedToken(span, t))
@@ -1348,6 +1366,4 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             return_type,
         })
     }
-
-    // TODO: operator names
 }
