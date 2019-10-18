@@ -63,6 +63,7 @@ pub enum Token<'source> {
     Import,
     Library,
     Proc,
+    Operator,
     EndOfFile,
 }
 
@@ -150,6 +151,7 @@ impl<'source> fmt::Display for Token<'source> {
             Import => "import",
             Library => "library",
             Proc => "proc",
+            Operator => "operator",
             EndOfFile => "<end of file>",
         })?;
         Ok(())
@@ -190,6 +192,13 @@ impl Operator {
             Token::Is => Some(Operator::Is),
             Token::And => Some(Operator::And),
             Token::Or => Some(Operator::Or),
+            _ => None,
+        }
+    }
+
+    fn unary_from_token<'source>(token: &Token<'source>) -> Option<Operator> {
+        match *token {
+            Token::Not => Some(Operator::Not),
             _ => None,
         }
     }
@@ -662,6 +671,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     "import" => Ok(Token::Import),
                     "library" => Ok(Token::Library),
                     "proc" => Ok(Token::Proc),
+                    "operator" => Ok(Token::Operator),
                     _ => Ok(Token::Identifier(identifier)),
                 }
             },
@@ -757,6 +767,26 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     fn parse_identifier(&mut self) -> Result<'source, &'source str> {
         match self.parse_token()? {
             Token::Identifier(s) => Ok(s),
+            Token::Operator => {
+                let token = self.parse_token()?;
+                let span = &self.source[self.token_low..self.position];
+                match token {
+                    ref t if Operator::binary_from_token(t).is_some() && *t != Token::And && *t != Token::Or => {
+                        let operator = Operator::binary_from_token(t).unwrap();
+                        Ok(operator.symbol())
+                    },
+                    ref t if Operator::unary_from_token(t).is_some() => {
+                        let operator = Operator::unary_from_token(t).unwrap();
+                        Ok(operator.symbol())
+                    },
+                    Token::For | Token::Continue => {
+                        Ok(span)
+                    },
+                    t => {
+                        Err(Error::UnexpectedToken(span, t))
+                    },
+                }
+            },
             t => {
                 let span = &self.source[self.token_low..self.position];
                 Err(Error::ExpectedIdentifier(span, t))
