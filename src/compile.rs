@@ -71,6 +71,7 @@ pub enum Type {
         return_type: TypeId,
     },
     Array(u64, TypeId),
+    TypeParameter(usize),
     Error,
 }
 
@@ -109,6 +110,7 @@ pub struct Function {
     pub return_type: TypeId,
     pub is_extern: bool,
     pub is_builtin: bool,
+    pub type_arguments: Box<[Box<str>]>,
     pub id: FunctionId,
 }
 
@@ -264,6 +266,10 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             },
             Type::Array(size, subtype) => {
                 write!(formatter, "{{{}}} {}", size, TypePrinter(self.0, subtype))?;
+                ""
+            },
+            Type::TypeParameter(index) => {
+                write!(formatter, "<type parameter {}>", index)?;
                 ""
             },
             Type::Error => "<error>",
@@ -432,6 +438,7 @@ impl<'source> Compiler<'source> {
                     return_type: typ,
                     is_extern: false,
                     is_builtin: true,
+                    type_arguments: vec![].into(),
                     id: FunctionId::null(),
                 };
                 overloads.push(this.new_function_id(function));
@@ -472,6 +479,7 @@ impl<'source> Compiler<'source> {
                     return_type: this.type_bool(),
                     is_extern: false,
                     is_builtin: true,
+                    type_arguments: vec![].into(),
                     id: FunctionId::null(),
                 };
                 overloads.push(this.new_function_id(function));
@@ -493,6 +501,7 @@ impl<'source> Compiler<'source> {
                 return_type: this.type_bool(),
                 is_extern: false,
                 is_builtin: true,
+                type_arguments: vec![].into(),
                 id: FunctionId::null(),
             };
             overloads.push(this.new_function_id(function));
@@ -916,7 +925,12 @@ impl<'source> Compiler<'source> {
         }
     }
 
-    pub fn resolve_type(&self, typ: &parse::Type) -> TypeId {
+    pub fn resolve_type(&self, typ: &parse::Type, function_id: FunctionId) -> TypeId {
+        let function = self.get_function_info(function_id);
+        self.resolve_type_with_parameters(typ, &function.type_arguments)
+    }
+
+    fn resolve_type_with_parameters(&self, typ: &parse::Type, type_parameters: &[Box<str>]) -> TypeId {
         let span = self.type_span(typ);
         match *typ {
             parse::Type::Name("int8")  => self.type_primitive(PrimitiveType::Integer8),
@@ -934,7 +948,11 @@ impl<'source> Compiler<'source> {
             parse::Type::Name("bool")  => self.type_primitive(PrimitiveType::Bool),
             parse::Type::Name("string")  => self.type_primitive(PrimitiveType::String),
             parse::Type::Name(name) => {
-                if let Some(&typ) = self.type_resolution_map.get(name) {
+                if let Some((index, _)) = type_parameters.iter().enumerate().find(|&(_, x)| &**x == name) {
+                    // FIXME: these TypeIds should probably be pregenerated as they are shared
+                    // between functions
+                    self.new_type_id(Type::TypeParameter(index))
+                } else if let Some(&typ) = self.type_resolution_map.get(name) {
                     typ
                 } else {
                     self.report_error(Error::UndefinedType(span));
@@ -942,26 +960,26 @@ impl<'source> Compiler<'source> {
                 }
             },
             parse::Type::Null => self.type_null(),
-            parse::Type::Reference(ref subtype) => self.type_ref(self.resolve_type(subtype)),
-            parse::Type::MutableReference(ref subtype) => self.type_mut(self.resolve_type(subtype)),
-            parse::Type::ArrayReference(ref subtype) => self.type_refs(self.resolve_type(subtype)),
-            parse::Type::MutableArrayReference(ref subtype) => self.type_muts(self.resolve_type(subtype)),
+            parse::Type::Reference(ref subtype) => self.type_ref(self.resolve_type_with_parameters(subtype, type_parameters)),
+            parse::Type::MutableReference(ref subtype) => self.type_mut(self.resolve_type_with_parameters(subtype, type_parameters)),
+            parse::Type::ArrayReference(ref subtype) => self.type_refs(self.resolve_type_with_parameters(subtype, type_parameters)),
+            parse::Type::MutableArrayReference(ref subtype) => self.type_muts(self.resolve_type_with_parameters(subtype, type_parameters)),
             parse::Type::Proc(ref argument_types, ref return_type) => {
                 let type_info = Type::Function {
-                    argument_types: argument_types.iter().map(|x| self.resolve_type(x)).collect(),
-                    return_type: self.resolve_type(return_type),
+                    argument_types: argument_types.iter().map(|x| self.resolve_type_with_parameters(x, type_parameters)).collect(),
+                    return_type: self.resolve_type_with_parameters(return_type, type_parameters),
                 };
                 self.new_type_id(type_info)
             },
             parse::Type::Record(ref fields) => {
                 let mut resolved_fields = vec![];
                 for &(field_name, ref type_expression) in fields.iter() {
-                    resolved_fields.push((field_name.into(), self.resolve_type(type_expression)));
+                    resolved_fields.push((field_name.into(), self.resolve_type_with_parameters(type_expression, type_parameters)));
                 }
                 let typ = Type::Record(resolved_fields.into());
                 self.new_type_id(typ)
             },
-            parse::Type::Array(size, ref subtype) => self.type_array(size, self.resolve_type(subtype)),
+            parse::Type::Array(size, ref subtype) => self.type_array(size, self.resolve_type_with_parameters(subtype, type_parameters)),
         }
     }
 
@@ -1002,9 +1020,10 @@ impl<'source> Compiler<'source> {
     pub fn finalize_definition(&mut self, definition: &'source Definition<'source>) {
         match *definition {
             Definition::Function(ref signature, ..) | Definition::Extern(ref signature) => {
+                let type_arguments: Box<[_]> = signature.type_arguments.iter().map(|x| (*x).into()).collect();
                 let name: Box<str> = signature.name.into();
-                let arguments: Box<_> = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type(type_expression)).collect();
-                let return_type = self.resolve_type(&signature.return_type);
+                let arguments: Box<_> = signature.arguments.iter().map(|&(_, ref type_expression)| self.resolve_type_with_parameters(type_expression, &type_arguments)).collect();
+                let return_type = self.resolve_type_with_parameters(&signature.return_type, &type_arguments);
 
                 let is_extern = if let Definition::Extern(..) = *definition {
                     true
@@ -1012,7 +1031,15 @@ impl<'source> Compiler<'source> {
                     false
                 };
 
-                let function = Function { name, arguments, return_type, is_extern, is_builtin: false, id: FunctionId::null() };
+                let function = Function {
+                    name,
+                    arguments,
+                    return_type,
+                    is_extern,
+                    is_builtin: false,
+                    type_arguments,
+                    id: FunctionId::null()
+                };
 
                 let function_id = self.new_function_id(function);
 
@@ -1022,7 +1049,7 @@ impl<'source> Compiler<'source> {
                 self.signature_resolution_map.insert(signature, function_id);
             },
             Definition::Variable(ref name, ref type_expression, ref value_expression_option) => {
-                let typ = self.resolve_type(type_expression);
+                let typ = self.resolve_type_with_parameters(type_expression, &[]);
                 let mut value = Value::None;
 
                 if let Some(value_expression) = value_expression_option.as_ref() {
@@ -1039,7 +1066,7 @@ impl<'source> Compiler<'source> {
                 self.global_resolution_map.insert(name, global_id);
             },
             Definition::Constant(ref name, ref type_expression, ref value_expression) => {
-                let typ = self.resolve_type(type_expression);
+                let typ = self.resolve_type_with_parameters(type_expression, &[]);
 
                 let expression_span = self.expression_span(value_expression);
                 let mut value = self.make_value(value_expression);
@@ -1053,7 +1080,7 @@ impl<'source> Compiler<'source> {
                 self.global_resolution_map.insert(name, global_id);
             },
             Definition::Type(name, ref type_expression) => {
-                let type_id = self.resolve_type(type_expression);
+                let type_id = self.resolve_type_with_parameters(type_expression, &[]);
                 let typ = self.get_type_info(type_id).clone();
                 let TypeId(pointer) = self.type_resolution_map[name];
                 unsafe {

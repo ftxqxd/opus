@@ -28,6 +28,7 @@ pub enum Token<'source> {
     Tilde,
     Dot,
     QuestionMark,
+    Dollar,
     Integer(u64, Option<(bool, u8)>),
     Float(f64, Option<u8>),
     String(Box<[u8]>),
@@ -95,6 +96,7 @@ impl<'source> fmt::Display for Token<'source> {
             Tilde => "¯",
             Dot => ".",
             QuestionMark => "?",
+            Dollar => "$",
             Integer(value, None) => {
                 buffer = format!("{}", value);
                 &buffer
@@ -252,6 +254,28 @@ impl Operator {
 }
 
 #[derive(Debug, PartialEq)]
+pub enum Parameter<'source> {
+    Value(Box<Expression<'source>>),
+    Type(Box<Type<'source>>),
+}
+
+impl<'source> Parameter<'source> {
+    pub fn value(&self) -> Option<&Expression<'source>> {
+        match *self {
+            Parameter::Value(ref e) => Some(e),
+            _ => None,
+        }
+    }
+
+    pub fn into_value(self) -> Option<Box<Expression<'source>>> {
+        match self {
+            Parameter::Value(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum Expression<'source> {
     Integer(u64, Option<(bool, u8)>),
     Float(f64, Option<u8>),
@@ -262,7 +286,7 @@ pub enum Expression<'source> {
     VariableDefinition(&'source str, Box<Type<'source>>),
     Proc(&'source str, Box<[Box<Type<'source>>]>),
     CallOrIndex(Box<Expression<'source>>, Box<[Box<Expression<'source>>]>),
-    NamedCall(&'source str, Box<[Box<Expression<'source>>]>),
+    NamedCall(&'source str, Box<[Parameter<'source>]>),
     Record(Box<Type<'source>>, Box<[(&'source str, Box<Expression<'source>>)]>),
     Operator(Operator, Box<Expression<'source>>, Box<Expression<'source>>),
     Reference(Box<Expression<'source>>),
@@ -324,6 +348,8 @@ pub struct FunctionSignature<'source> {
     pub name: &'source str,
     /// A list of `(name, type)` representing the names & types of the function's arguments.
     pub arguments: Vec<(&'source str, Box<Type<'source>>)>,
+
+    pub type_arguments: Vec<&'source str>,
 
     pub return_type: Box<Type<'source>>,
 }
@@ -551,6 +577,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('~') | Some('¯') => Ok(Token::Tilde),
             Some('.') => Ok(Token::Dot),
             Some('?') => Ok(Token::QuestionMark),
+            Some('$') => Ok(Token::Dollar),
             Some(c @ '0'..= '9') => {
                 let mut i = c as u64 - '0' as u64;
                 while let Some(c @ '0'..= '9') = self.peek() {
@@ -1084,11 +1111,17 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     let _ = self.parse_token();
                     self.ignore_dents += 1;
                     let mut args = vec![];
+                    let mut dollar_span = None;
                     loop {
                         match self.peek_token()? {
                             Token::RightSquareBracket => { let _ = self.parse_token(); break },
+                            Token::Dollar => {
+                                let _ = self.parse_token();
+                                dollar_span = Some(&self.source[self.token_low..self.position]);
+                                args.push(Parameter::Type(self.parse_type()?));
+                            },
                             _ => {
-                                args.push(self.parse_expression()?);
+                                args.push(Parameter::Value(self.parse_expression()?));
                             },
                         }
                     }
@@ -1098,7 +1131,11 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                             expression_box = Box::new(Expression::NamedCall(name, args.into()));
                         },
                         _ => {
-                            expression_box = Box::new(Expression::CallOrIndex(expression_box, args.into()));
+                            if let Some(span) = dollar_span {
+                                return Err(Error::UnexpectedToken(span, Token::Dollar))
+                            }
+                            let value_args = args.into_iter().map(|x| x.into_value().unwrap()).collect();
+                            expression_box = Box::new(Expression::CallOrIndex(expression_box, value_args));
                         },
                     }
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
@@ -1338,6 +1375,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
         let name = self.parse_identifier()?;
         let mut arguments = vec![];
+        let mut type_arguments = vec![];
         self.expect(&Token::LeftSquareBracket)?;
 
         self.ignore_dents += 1;
@@ -1346,6 +1384,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Token::RightSquareBracket => {
                     let _ = self.parse_token()?;
                     break
+                },
+                Token::Dollar => {
+                    let _ = self.parse_token()?;
+                    type_arguments.push(self.parse_identifier()?);
                 },
                 _ => {
                     let name2 = self.parse_identifier()?;
@@ -1363,6 +1405,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         Ok(FunctionSignature {
             name,
             arguments,
+            type_arguments,
             return_type,
         })
     }

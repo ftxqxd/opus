@@ -1,7 +1,7 @@
 use std::mem;
 use std::fmt;
 use std::collections::HashMap;
-use crate::parse::{Expression, Statement, FunctionSignature, Block, Operator};
+use crate::parse::{self, Expression, Statement, FunctionSignature, Block, Operator};
 use crate::compile::{Type, TypeId, PrimitiveType, PointerType, Compiler, Error, Function, FunctionId, GlobalId, TypePrinter, FunctionPrinter, CastType};
 
 #[derive(Debug)]
@@ -130,11 +130,15 @@ impl<'source> IrGenerator<'source> {
         variable
     }
 
+    fn resolve_type(&mut self, type_expression: &'source parse::Type<'source>) -> TypeId {
+        self.compiler.resolve_type(type_expression, self.function.id)
+    }
+
     fn generate_ir_from_function(&mut self, block: &'source Block<'source>) {
         // First, generate the argument values
         let mut types = vec![];
         for &(_, ref type_expression) in &self.signature.arguments {
-            let typ = self.compiler.resolve_type(type_expression);
+            let typ = self.resolve_type(type_expression);
             types.push(typ.clone());
             self.new_variable(Variable { typ, is_temporary: true });
         }
@@ -403,7 +407,7 @@ impl<'source> IrGenerator<'source> {
                 // Define iteration variable
                 let scope = self.begin_scope();
                 let pointer_type = if let Some(type_expression) = type_option.as_ref() {
-                    self.compiler.type_mut(self.compiler.resolve_type(type_expression))
+                    self.compiler.type_mut(self.resolve_type(type_expression))
                 } else {
                     self.compiler.type_primitive(PrimitiveType::Generic)
                 };
@@ -584,7 +588,7 @@ impl<'source> IrGenerator<'source> {
                 }
             },
             Expression::Proc(name, ref type_expressions) => {
-                let types: Vec<_> = type_expressions.iter().map(|e| self.compiler.resolve_type(e)).collect();
+                let types: Vec<_> = type_expressions.iter().map(|e| self.resolve_type(e)).collect();
                 if let Some(function_id) = self.compiler.lookup_function(expression_span, name, &types) {
                     let function = self.compiler.get_function_info(function_id);
                     if function.is_builtin {
@@ -720,7 +724,7 @@ impl<'source> IrGenerator<'source> {
             Expression::Cast(ref subexpression, ref type_expression) => {
                 let variable_id = self.generate_ir_from_expression(subexpression, None);
                 let old_type = self.variables[variable_id].typ;
-                let typ = self.compiler.resolve_type(type_expression);
+                let typ = self.resolve_type(type_expression);
                 if let Some(cast_type) = self.compiler.can_cast(old_type, typ) {
                     let new_variable_id = self.new_variable(Variable { typ, is_temporary: true });
                     self.instructions().push(Instruction::Cast(cast_type, new_variable_id, variable_id));
@@ -789,13 +793,13 @@ impl<'source> IrGenerator<'source> {
             },
             Expression::Sizeof(ref type_expression) => {
                 let variable = self.new_variable(Variable { typ: self.compiler.type_primitive(PrimitiveType::Size), is_temporary: true });
-                let typ = self.compiler.resolve_type(type_expression);
+                let typ = self.resolve_type(type_expression);
                 self.instructions().push(Instruction::Sizeof(variable, typ));
                 variable
             },
             Expression::Alignof(ref type_expression) => {
                 let variable = self.new_variable(Variable { typ: self.compiler.type_primitive(PrimitiveType::Size), is_temporary: true });
-                let typ = self.compiler.resolve_type(type_expression);
+                let typ = self.resolve_type(type_expression);
                 self.instructions().push(Instruction::Alignof(variable, typ));
                 variable
             },
@@ -892,7 +896,9 @@ impl<'source> IrGenerator<'source> {
         Some((var, is_lvalue))
     }
 
-    fn generate_ir_for_index(&mut self, mut indexee_variable: VariableId, indexee_is_lvalue: bool, span: &'source str, indexee_span: &'source str, arguments: &'source [Box<Expression<'source>>], pointer_type: PointerType) -> (VariableId, bool) {
+    fn generate_ir_for_index<I>(&mut self, mut indexee_variable: VariableId, indexee_is_lvalue: bool, span: &'source str, indexee_span: &'source str, arguments: I, pointer_type: PointerType) -> (VariableId, bool)
+        where I: Iterator<Item=&'source Expression<'source>> + Clone
+    {
         let indexee_type = if indexee_is_lvalue {
             self.compiler.type_deref(self.variables[indexee_variable].typ)
         } else {
@@ -907,7 +913,7 @@ impl<'source> IrGenerator<'source> {
                     indexee_variable = self.dereference_pointer(indexee_variable);
                 }
 
-                let mut argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, Some(type_size))).collect();
+                let mut argument_variables: Vec<_> = arguments.map(|x| self.generate_ir_from_expression(x, Some(type_size))).collect();
                 if argument_variables.len() != 1 {
                     self.compiler.report_error(Error::InvalidNumberOfArgs(span))
                 }
@@ -930,7 +936,7 @@ impl<'source> IrGenerator<'source> {
                     self.compiler.report_error(Error::InvalidLvalue(span));
                     return (self.generate_error(), true)
                 }
-                let mut argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, Some(type_size))).collect();
+                let mut argument_variables: Vec<_> = arguments.map(|x| self.generate_ir_from_expression(x, Some(type_size))).collect();
                 if argument_variables.len() != 1 {
                     self.compiler.report_error(Error::InvalidNumberOfArgs(span))
                 }
@@ -953,7 +959,7 @@ impl<'source> IrGenerator<'source> {
                 is_lvalue = false;
 
                 // TODO: use argument types for type inference instead of None
-                let argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, None)).collect();
+                let argument_variables: Vec<_> = arguments.map(|x| self.generate_ir_from_expression(x, None)).collect();
                 let output_variable = self.new_variable(Variable { typ: return_type, is_temporary: true });
                 self.instructions().push(Instruction::Call(output_variable, indexee_variable, (*argument_variables).into()));
                 output_variable
@@ -1010,7 +1016,7 @@ impl<'source> IrGenerator<'source> {
                     self.compiler.report_error(Error::ShadowedName(span, name.clone()));
                     self.generate_error()
                 } else {
-                    let typ = self.compiler.resolve_type(type_expression);
+                    let typ = self.resolve_type(type_expression);
                     let variable_id = self.new_variable(Variable { typ: self.compiler.type_mut(typ), is_temporary: false });
                     self.instructions().push(Instruction::Allocate(variable_id));
                     self.locals_stack.push(name.clone());
@@ -1031,8 +1037,16 @@ impl<'source> IrGenerator<'source> {
             Expression::NamedCall(name, ref arguments) => {
                 if self.compiler.name_resolution_map.contains_key(&name) {
                     is_lvalue = false;
-                    let mut argument_variables: Vec<_> = arguments.iter().map(|x| self.generate_ir_from_expression(x, Some(self.compiler.type_primitive(PrimitiveType::GenericInteger)))).collect();
-                    let argument_spans = arguments.iter().map(|x| self.compiler.expression_span(x)).collect();
+                    let mut argument_variables: Vec<_> = arguments
+                        .iter()
+                        .filter_map(|x| x.value())
+                        .map(|x| self.generate_ir_from_expression(x, Some(self.compiler.type_primitive(PrimitiveType::GenericInteger))))
+                        .collect();
+                    let argument_spans = arguments
+                        .iter()
+                        .filter_map(|x| x.value())
+                        .map(|x| self.compiler.expression_span(x))
+                        .collect();
                     if let Some((function_variable, output_variable, _)) = self.get_function_call_variables(span, name, &mut argument_variables, argument_spans) {
                         self.instructions().push(Instruction::Call(output_variable, function_variable, (*argument_variables).into()));
                         output_variable
@@ -1041,7 +1055,8 @@ impl<'source> IrGenerator<'source> {
                     }
                 } else {
                     if let Some((variable_id, indexee_is_lvalue)) = self.lookup_name(name, span, pointer_type) {
-                        let (var, is_lvalue2) = self.generate_ir_for_index(variable_id, indexee_is_lvalue, span, name, arguments, pointer_type);
+                        let value_arguments: Box<[_]> = arguments.iter().filter_map(|x| x.value()).collect();
+                        let (var, is_lvalue2) = self.generate_ir_for_index(variable_id, indexee_is_lvalue, span, name, value_arguments.iter().map(|x| &**x), pointer_type);
                         is_lvalue = is_lvalue2;
                         var
                     } else {
@@ -1057,12 +1072,12 @@ impl<'source> IrGenerator<'source> {
                 };
                 let (indexee_variable, indexee_is_lvalue) = self.try_generate_pointer_from_expression(indexee_expression, pointer_type2);
                 let indexee_span = self.compiler.expression_span(indexee_expression);
-                let (var, is_lvalue2) = self.generate_ir_for_index(indexee_variable, indexee_is_lvalue, span, indexee_span, arguments, pointer_type);
+                let (var, is_lvalue2) = self.generate_ir_for_index(indexee_variable, indexee_is_lvalue, span, indexee_span, arguments.iter().map(|x| &**x), pointer_type);
                 is_lvalue = is_lvalue2;
                 var
             },
             Expression::Record(ref type_expression, ref fields) => {
-                let typ = self.compiler.type_mut(self.compiler.resolve_type(type_expression));
+                let typ = self.compiler.type_mut(self.resolve_type(type_expression));
                 let output_variable = self.new_variable(Variable { typ, is_temporary: true });
                 self.instructions().push(Instruction::Allocate(output_variable));
 

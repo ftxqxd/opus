@@ -93,6 +93,7 @@ impl<'source> LlvmBackend<'source> {
                     LLVMPointerType(function_type, 0)
                 },
                 Type::Array(size, subtype) => LLVMArrayType(self.translate_type(subtype), size as _),
+                Type::TypeParameter(..) => unimplemented!(),
                 Type::Error => unreachable!(),
             }
         }
@@ -217,6 +218,7 @@ impl<'source> LlvmBackend<'source> {
             Type::Array(size, subtype) => {
                 format!("Array{}Of{}", size, self.mangle_type_name(subtype))
             },
+            Type::TypeParameter(..) => unimplemented!(),
             Type::Error => "error".into(),
         }
     }
