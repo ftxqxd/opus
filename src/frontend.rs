@@ -64,15 +64,13 @@ pub fn main() {
 
     let mut files: VecDeque<PathBuf> = VecDeque::new();
     files.push_back(compiler.options.filename.clone().into());
-    let mut filenames = Vec::new();
-    filenames.push(files[0].clone());
+    compiler.filenames.push(files[0].clone());
 
     let mut definitions = vec![];
 
     // This code is kind of ew.  We use arenas for everything to get around a bunch of borrow
     // errors.  There's probably a Better Way To Do It™.
     let source_arena = Arena::new();
-    let mut sources = vec![];
     let definition_arena = Arena::new();
 
     while let Some(file) = files.pop_front() {
@@ -91,7 +89,7 @@ pub fn main() {
             process::exit(1)
         }
         let source = &**source_arena.alloc(source.unwrap());
-        sources.push(source);
+        compiler.sources.push(source);
 
         // parent must always exist as `file` refers to a file not a directory
         let directory = file.parent().unwrap();
@@ -102,7 +100,7 @@ pub fn main() {
                     let mut file2 = PathBuf::new();
                     file2.push(directory);
                     file2.push(String::from_utf8_lossy(path).to_string());
-                    filenames.push(file2.clone());
+                    compiler.filenames.push(file2.clone());
                     files.push_back(file2);
                 },
                 FrontendDirective::Library(name) => {
@@ -113,9 +111,6 @@ pub fn main() {
             definitions.push(definition);
         }
     }
-
-    compiler.sources = sources;
-    compiler.filenames = filenames;
 
     // Do the compile!!!
 
