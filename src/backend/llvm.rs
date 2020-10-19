@@ -289,7 +289,7 @@ impl<'source> Backend for LlvmBackend<'source> {
             let cpu = LLVMGetHostCPUName();
             let features = LLVMGetHostCPUFeatures();
             let optimization = LLVMCodeGenOptLevel::LLVMCodeGenLevelDefault;
-            let relocation = LLVMRelocMode::LLVMRelocDefault;
+            let relocation = LLVMRelocMode::LLVMRelocPIC;
             let code_model = LLVMCodeModel::LLVMCodeModelDefault;
             let target_machine = LLVMCreateTargetMachine(target.assume_init(), triple, cpu, features, optimization, relocation, code_model);
 
