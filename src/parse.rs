@@ -12,8 +12,6 @@ pub enum Token<'source> {
     RightBrace,
     Colon,
     ColonEquals,
-    #[allow(non_camel_case_types)]
-    T_PAAMAYIM_NEKUDOTAYIM,
     Equals,
     LessThan,
     GreaterThan,
@@ -80,7 +78,6 @@ impl<'source> fmt::Display for Token<'source> {
             RightBrace => "}",
             Colon => ":",
             ColonEquals => "←",
-            T_PAAMAYIM_NEKUDOTAYIM => "::",
             Equals => "=",
             LessThan => "<",
             GreaterThan => ">",
@@ -516,10 +513,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         self.advance();
                         Ok(Token::ColonEquals)
                     },
-                    Some(':') => {
-                        self.advance();
-                        Ok(Token::T_PAAMAYIM_NEKUDOTAYIM)
-                    },
                     _ => Ok(Token::Colon),
                 }
             },
@@ -755,6 +748,16 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         Ok(())
     }
 
+    fn maybe_consume(&mut self, expected: &Token<'source>) -> Result<'source, bool> {
+        let token = self.peek_token()?;
+        if token == *expected {
+            let _ = self.parse_token();
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
     fn parse_integer(&mut self) -> Result<'source, u64> {
         match self.parse_token()? {
             Token::Integer(i, _) => Ok(i),
@@ -870,24 +873,21 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         let typ = match token {
             Token::Identifier(s) => Type::Name(s),
             Token::Null => Type::Null,
-            Token::Ref => {
-                let subtype = self.parse_type()?;
-                Type::Reference(subtype)
+            Token::At => {
+                let next_token = self.peek_token()?;
+                match next_token {
+                    Token::Mut => {
+                        let _ = self.parse_token();
+                        let subtype = self.parse_type()?;
+                        Type::MutableReference(subtype)
+                    },
+                    _ => {
+                        let subtype = self.parse_type()?;
+                        Type::Reference(subtype)
+                    },
+                }
             },
-            Token::Mut => {
-                let subtype = self.parse_type()?;
-                Type::MutableReference(subtype)
-            },
-            Token::Refs => {
-                let subtype = self.parse_type()?;
-                Type::ArrayReference(subtype)
-            },
-            Token::Muts => {
-                let subtype = self.parse_type()?;
-                Type::MutableArrayReference(subtype)
-            },
-            Token::Proc => {
-                self.expect(&Token::LeftSquareBracket)?;
+            Token::LeftSquareBracket => {
                 let mut argument_types = vec![];
                 loop {
                     match self.peek_token()? {
@@ -912,7 +912,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         break
                     }
                     let field_name = self.parse_identifier()?;
-                    self.expect(&Token::Colon)?;
                     let field_type = self.parse_type()?;
                     fields.push((field_name, field_type));
                 }
@@ -921,11 +920,20 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 Type::Record(fields.into())
             },
             Token::LeftBrace => {
-                let value = self.parse_integer()?;
-                self.expect(&Token::RightBrace)?;
-                let subtype = self.parse_type()?;
-
-                Type::Array(value, subtype)
+                if self.maybe_consume(&Token::RightBrace)? {
+                    let type_constructor = if self.maybe_consume(&Token::Mut)? {
+                        Type::MutableArrayReference
+                    } else {
+                        Type::ArrayReference
+                    };
+                    let subtype = self.parse_type()?;
+                    type_constructor(subtype)
+                } else {
+                    let value = self.parse_integer()?;
+                    self.expect(&Token::RightBrace)?;
+                    let subtype = self.parse_type()?;
+                    Type::Array(value, subtype)
+                }
             },
             t => {
                 let span = &self.source[low..self.position];
@@ -983,7 +991,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::Var => {
                 let variable_name = self.parse_identifier()?;
-                self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 Expression::VariableDefinition(variable_name, type_expression)
             },
@@ -1103,7 +1110,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     }
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
-                Token::T_PAAMAYIM_NEKUDOTAYIM => {
+                Token::Colon => {
                     let _ = self.parse_token();
                     let typ = self.parse_type()?;
                     expression_box = Box::new(Expression::Cast(expression_box, typ));
@@ -1125,8 +1132,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let variable_name = self.parse_identifier()?;
                 match self.peek_token()? {
-                    Token::Colon => {
+                    Token::ColonEquals => {
                         let _ = self.parse_token();
+                        let value = self.parse_expression()?;
+                        Statement::VariableDefinition(variable_name, value)
+                    },
+                    _ => {
                         let typ = self.parse_type()?;
                         let left_span = &self.source[low..self.position];
 
@@ -1145,11 +1156,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                                 Statement::Expression(expression)
                             },
                         }
-                    },
-                    _ => {
-                        self.expect(&Token::ColonEquals)?;
-                        let value = self.parse_expression()?;
-                        Statement::VariableDefinition(variable_name, value)
                     },
                 }
             },
@@ -1181,11 +1187,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let name = self.parse_identifier()?;
 
                 let type_option = match self.peek_token()? {
-                    Token::Colon => {
-                        let _ = self.parse_token();
-                        Some(self.parse_type()?)
-                    },
-                    _ => None,
+                    Token::In => None,
+                    _ => Some(self.parse_type()?),
                 };
 
                 self.expect(&Token::In)?;
@@ -1272,7 +1275,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Var => {
                 let _ = self.parse_token();
                 let variable_name = self.parse_identifier()?;
-                self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 let value_option = match self.peek_token()? {
                     Token::ColonEquals => {
@@ -1288,7 +1290,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Const => {
                 let _ = self.parse_token();
                 let variable_name = self.parse_identifier()?;
-                self.expect(&Token::Colon)?;
                 let type_expression = self.parse_type()?;
                 self.expect(&Token::ColonEquals)?;
                 let value = self.parse_expression()?;
@@ -1349,7 +1350,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 },
                 _ => {
                     let name2 = self.parse_identifier()?;
-                    self.expect(&Token::Colon)?;
                     let typ = self.parse_type()?;
                     arguments.push((name2, typ));
                 },
@@ -1357,7 +1357,6 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         }
         self.ignore_dents -= 1;
 
-        self.expect(&Token::Colon)?;
         let return_type = self.parse_type()?;
 
         Ok(FunctionSignature {

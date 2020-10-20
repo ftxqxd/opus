@@ -226,19 +226,19 @@ impl<'source> fmt::Display for TypePrinter<'source> {
             Type::Null => "null",
             Type::String => "string",
             Type::Pointer(PointerType::Reference, subtype) => {
-                write!(formatter, "ref {}", TypePrinter(self.0, subtype))?;
+                write!(formatter, "@{}", TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Pointer(PointerType::Mutable, subtype) => {
-                write!(formatter, "mut {}", TypePrinter(self.0, subtype))?;
+                write!(formatter, "@mut {}", TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Pointer(PointerType::Array, subtype) => {
-                write!(formatter, "refs {}", TypePrinter(self.0, subtype))?;
+                write!(formatter, "{{}} {}", TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Pointer(PointerType::ArrayMutable, subtype) => {
-                write!(formatter, "muts {}", TypePrinter(self.0, subtype))?;
+                write!(formatter, "mut {{}} {}", TypePrinter(self.0, subtype))?;
                 ""
             },
             Type::Record(ref fields) => {
@@ -250,7 +250,7 @@ impl<'source> fmt::Display for TypePrinter<'source> {
                 ""
             },
             Type::Function { ref argument_types, return_type } => {
-                write!(formatter, "proc [")?;
+                write!(formatter, "[")?;
                 let mut printed_anything = false;
                 for &argument_type in argument_types.iter() {
                     if printed_anything {
