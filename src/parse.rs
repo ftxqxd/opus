@@ -25,6 +25,7 @@ pub enum Token<'source> {
     At,
     Tilde,
     Dot,
+    Comma,
     QuestionMark,
     Integer(u64, Option<(bool, u8)>),
     Float(f64, Option<u8>),
@@ -91,6 +92,7 @@ impl<'source> fmt::Display for Token<'source> {
             At => "@",
             Tilde => "¯",
             Dot => ".",
+            Comma => ",",
             QuestionMark => "?",
             Integer(value, None) => {
                 buffer = format!("{}", value);
@@ -547,6 +549,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('@') => Ok(Token::At),
             Some('~') | Some('¯') => Ok(Token::Tilde),
             Some('.') => Ok(Token::Dot),
+            Some(',') => Ok(Token::Comma),
             Some('?') => Ok(Token::QuestionMark),
             Some(c @ '0'..= '9') => {
                 let mut i = c as u64 - '0' as u64;
@@ -870,6 +873,34 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
         }
     }
 
+    fn parse_comma_separated<T>(&mut self, close: &Token<'source>, mut parse_item: impl FnMut(&mut Self) -> Result<'source, T>)
+        -> Result<'source, Vec<T>>
+    {
+        self.ignore_dents += 1;
+
+        let token = self.peek_token()?;
+        if token == *close {
+            let _ = self.parse_token();
+            self.ignore_dents -= 1;
+            return Ok(vec![])
+        }
+
+        let mut items = vec![];
+        loop {
+            items.push(parse_item(self)?);
+            let saw_comma = self.maybe_consume(&Token::Comma)?;
+            let token = self.peek_token()?;
+            if token == *close {
+                let _ = self.parse_token();
+                self.ignore_dents -= 1;
+                break Ok(items)
+            } else if !saw_comma {
+                let span = &self.source[self.token_low..self.real_position];
+                return Err(Error::UnexpectedToken(span, token))
+            }
+        }
+    }
+
     fn parse_type(&mut self) -> Result<'source, Box<Type<'source>>> {
         let token = self.parse_token()?;
         let low = self.token_low;
@@ -892,16 +923,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 }
             },
             Token::LeftSquareBracket => {
-                let mut argument_types = vec![];
-                loop {
-                    match self.peek_token()? {
-                        Token::RightSquareBracket => {
-                            let _ = self.parse_token();
-                            break
-                        },
-                        _ => argument_types.push(self.parse_type()?),
-                    }
-                }
+                let argument_types = self.parse_comma_separated(&Token::RightSquareBracket, |this| this.parse_type())?;
                 let return_type = self.parse_type()?;
                 Type::Proc(argument_types.into(), return_type)
             },
@@ -1055,18 +1077,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Proc => {
                 let name = self.parse_identifier()?;
                 self.expect(&Token::LeftSquareBracket)?;
-                let mut types = vec![];
-                loop {
-                    match self.peek_token()? {
-                        Token::RightSquareBracket => {
-                            let _ = self.parse_token();
-                            break
-                        },
-                        _ => {
-                            types.push(self.parse_type()?);
-                        },
-                    }
-                }
+                let types = self.parse_comma_separated(&Token::RightSquareBracket, |this| this.parse_type())?;
                 Expression::Proc(name, types.into())
             },
             t => {
@@ -1093,17 +1104,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 },
                 Token::LeftSquareBracket => {
                     let _ = self.parse_token();
-                    self.ignore_dents += 1;
-                    let mut args = vec![];
-                    loop {
-                        match self.peek_token()? {
-                            Token::RightSquareBracket => { let _ = self.parse_token(); break },
-                            _ => {
-                                args.push(self.parse_expression()?);
-                            },
-                        }
-                    }
-                    self.ignore_dents -= 1;
+                    let args = self.parse_comma_separated(&Token::RightSquareBracket, |this| this.parse_expression())?;
                     match &*expression_box {
                         Expression::Variable(name) => {
                             expression_box = Box::new(Expression::NamedCall(name, args.into()));
@@ -1342,24 +1343,12 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
         let name = self.parse_identifier()?;
-        let mut arguments = vec![];
         self.expect(&Token::LeftSquareBracket)?;
-
-        self.ignore_dents += 1;
-        loop {
-            match self.peek_token()? {
-                Token::RightSquareBracket => {
-                    let _ = self.parse_token()?;
-                    break
-                },
-                _ => {
-                    let name2 = self.parse_identifier()?;
-                    let typ = self.parse_type()?;
-                    arguments.push((name2, typ));
-                },
-            }
-        }
-        self.ignore_dents -= 1;
+        let arguments = self.parse_comma_separated(&Token::RightSquareBracket, |this| {
+            let name2 = this.parse_identifier()?;
+            let typ = this.parse_type()?;
+            Ok((name2, typ))
+        })?;
 
         let return_type = self.parse_type()?;
 
