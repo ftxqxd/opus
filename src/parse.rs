@@ -523,6 +523,10 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         self.advance();
                         Ok(Token::LessThanEquals)
                     },
+                    Some('-') => {
+                        self.advance();
+                        Ok(Token::ColonEquals)
+                    },
                     _ => Ok(Token::LessThan),
                 }
             },
