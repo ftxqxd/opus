@@ -11,8 +11,8 @@ pub enum Token<'source> {
     LeftBrace,
     RightBrace,
     Colon,
-    ColonEquals,
     Equals,
+    EqualsEquals,
     LessThan,
     GreaterThan,
     LessThanEquals,
@@ -78,8 +78,8 @@ impl<'source> fmt::Display for Token<'source> {
             LeftBrace => "{",
             RightBrace => "}",
             Colon => ":",
-            ColonEquals => "←",
             Equals => "=",
+            EqualsEquals => "==",
             LessThan => "<",
             GreaterThan => ">",
             LessThanEquals => "<=",
@@ -183,7 +183,7 @@ impl Operator {
             Token::Asterisk => Some(Operator::Times),
             Token::Slash => Some(Operator::Divide),
             Token::Percent => Some(Operator::Modulo),
-            Token::Equals => Some(Operator::Equals),
+            Token::EqualsEquals => Some(Operator::Equals),
             Token::LessThan => Some(Operator::LessThan),
             Token::GreaterThan => Some(Operator::GreaterThan),
             Token::LessThanEquals => Some(Operator::LessThanEquals),
@@ -508,26 +508,21 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some(']') => Ok(Token::RightSquareBracket),
             Some('{') => Ok(Token::LeftBrace),
             Some('}') => Ok(Token::RightBrace),
-            Some('←') => Ok(Token::ColonEquals),
-            Some(':') => {
+            Some(':') => Ok(Token::Colon),
+            Some('=') => {
                 match self.peek() {
                     Some('=') => {
                         self.advance();
-                        Ok(Token::ColonEquals)
+                        Ok(Token::EqualsEquals)
                     },
-                    _ => Ok(Token::Colon),
+                    _ => Ok(Token::Equals),
                 }
             },
-            Some('=') => Ok(Token::Equals),
             Some('<') => {
                 match self.peek() {
                     Some('=') => {
                         self.advance();
                         Ok(Token::LessThanEquals)
-                    },
-                    Some('-') => {
-                        self.advance();
-                        Ok(Token::ColonEquals)
                     },
                     _ => Ok(Token::LessThan),
                 }
@@ -547,7 +542,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Some('/') => Ok(Token::Slash),
             Some('%') => Ok(Token::Percent),
             Some('@') => Ok(Token::At),
-            Some('~') | Some('¯') => Ok(Token::Tilde),
+            Some('~') => Ok(Token::Tilde),
             Some('.') => Ok(Token::Dot),
             Some(',') => Ok(Token::Comma),
             Some('?') => Ok(Token::QuestionMark),
@@ -922,8 +917,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     },
                 }
             },
-            Token::LeftSquareBracket => {
-                let argument_types = self.parse_comma_separated(&Token::RightSquareBracket, |this| this.parse_type())?;
+            Token::LeftParenthesis => {
+                let argument_types = self.parse_comma_separated(&Token::RightParenthesis, |this| this.parse_type())?;
                 let return_type = self.parse_type()?;
                 Type::Proc(argument_types.into(), return_type)
             },
@@ -995,7 +990,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 self.ignore_dents -= 1;
                 Expression::Parentheses(inner)
             },
-            Token::Tilde => {
+            Token::Minus => {
                 let subexpression = self.parse_atom()?;
                 Expression::Negate(subexpression)
             },
@@ -1061,7 +1056,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 loop {
                     match self.parse_token()? {
                         Token::Identifier(field_name) => {
-                            self.expect(&Token::ColonEquals)?;
+                            self.expect(&Token::Equals)?;
                             let value = self.parse_expression()?;
                             fields.push((field_name, value));
                         },
@@ -1076,8 +1071,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             },
             Token::Proc => {
                 let name = self.parse_identifier()?;
-                self.expect(&Token::LeftSquareBracket)?;
-                let types = self.parse_comma_separated(&Token::RightSquareBracket, |this| this.parse_type())?;
+                self.expect(&Token::LeftParenthesis)?;
+                let types = self.parse_comma_separated(&Token::RightParenthesis, |this| this.parse_type())?;
                 Expression::Proc(name, types.into())
             },
             t => {
@@ -1102,9 +1097,9 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                     expression_box = Box::new(Expression::Field(field_name, expression_box));
                     self.compiler.expression_spans.insert(&*expression_box, &self.source[low..self.position]);
                 },
-                Token::LeftSquareBracket => {
+                Token::LeftParenthesis => {
                     let _ = self.parse_token();
-                    let args = self.parse_comma_separated(&Token::RightSquareBracket, |this| this.parse_expression())?;
+                    let args = self.parse_comma_separated(&Token::RightParenthesis, |this| this.parse_expression())?;
                     match &*expression_box {
                         Expression::Variable(name) => {
                             expression_box = Box::new(Expression::NamedCall(name, args.into()));
@@ -1137,7 +1132,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let variable_name = self.parse_identifier()?;
                 match self.peek_token()? {
-                    Token::ColonEquals => {
+                    Token::Equals => {
                         let _ = self.parse_token();
                         let value = self.parse_expression()?;
                         Statement::VariableDefinition(variable_name, value)
@@ -1147,7 +1142,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                         let left_span = &self.source[low..self.position];
 
                         match self.peek_token()? {
-                            Token::ColonEquals => {
+                            Token::Equals => {
                                 let _ = self.parse_token();
                                 let value = self.parse_expression()?;
 
@@ -1222,8 +1217,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let expression = self.parse_expression()?;
 
                 match self.peek_token()? {
-                    Token::ColonEquals => {
-                        // Assignment expression `a := b`
+                    Token::Equals => {
+                        // Assignment expression `a = b`
                         let _ = self.parse_token();
                         let right = self.parse_expression()?;
                         Statement::Assignment(expression, right)
@@ -1282,7 +1277,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let variable_name = self.parse_identifier()?;
                 let type_expression = self.parse_type()?;
                 let value_option = match self.peek_token()? {
-                    Token::ColonEquals => {
+                    Token::Equals => {
                         let _ = self.parse_token();
                         Some(self.parse_expression()?)
                     },
@@ -1296,7 +1291,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
                 let _ = self.parse_token();
                 let variable_name = self.parse_identifier()?;
                 let type_expression = self.parse_type()?;
-                self.expect(&Token::ColonEquals)?;
+                self.expect(&Token::Equals)?;
                 let value = self.parse_expression()?;
                 span = &self.source[low..self.position];
 
@@ -1305,7 +1300,7 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
             Token::Type => {
                 let _ = self.parse_token();
                 let name = self.parse_identifier()?;
-                self.expect(&Token::ColonEquals)?;
+                self.expect(&Token::Equals)?;
                 let typ = self.parse_type()?;
                 span = &self.source[low..self.position];
 
@@ -1343,8 +1338,8 @@ impl<'source, 'compiler> Parser<'compiler, 'source> {
 
     fn parse_function_signature(&mut self) -> Result<'source, FunctionSignature<'source>> {
         let name = self.parse_identifier()?;
-        self.expect(&Token::LeftSquareBracket)?;
-        let arguments = self.parse_comma_separated(&Token::RightSquareBracket, |this| {
+        self.expect(&Token::LeftParenthesis)?;
+        let arguments = self.parse_comma_separated(&Token::RightParenthesis, |this| {
             let name2 = this.parse_identifier()?;
             let typ = this.parse_type()?;
             Ok((name2, typ))
