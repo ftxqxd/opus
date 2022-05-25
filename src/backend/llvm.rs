@@ -298,7 +298,7 @@ impl<'source> Backend for LlvmBackend<'source> {
                 panic!("{:?}", CString::from_raw(buffer.assume_init()))
             }
 
-            CString::from_raw(cstring);
+            let _ = CString::from_raw(cstring);
         }
 
         // LINKING //
